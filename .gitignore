@@ -1,0 +1,11 @@
+# Ignorar dados brutos e processados
+Dados_Brutos/
+Dados_Processados/
+
+# Ignorar cache do Python
+__pycache__/
+
+# Ignorar resultados de treino/execução
+
+
+
