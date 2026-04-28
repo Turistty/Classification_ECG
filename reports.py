@@ -153,23 +153,6 @@ def _plot_pr(y_true: np.ndarray, y_prob: np.ndarray, classes: Sequence[str], out
     plt.close(fig)
 
 
-def _plot_auc_bars(y_true: np.ndarray, y_prob: np.ndarray, classes: Sequence[str], output_path: Path) -> None:
-    auroc = [_safe_auc(y_true[:, i], y_prob[:, i]) for i in range(len(classes))]
-    auprc = [_safe_auprc(y_true[:, i], y_prob[:, i]) for i in range(len(classes))]
-    x = np.arange(len(classes))
-    width = 0.35
-    fig = plt.figure(figsize=(9, 5))
-    plt.bar(x - width / 2, auroc, width=width, label="AUROC")
-    plt.bar(x + width / 2, auprc, width=width, label="AUPRC")
-    plt.xticks(x, classes)
-    plt.ylim(0, 1)
-    plt.grid(True, axis="y", alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=130)
-    plt.close(fig)
-
-
 def _table(y_true: np.ndarray, y_prob: np.ndarray, classes: Sequence[str], threshold: float) -> pd.DataFrame:
     y_pred = (y_prob >= threshold).astype(int)
     rows = []
@@ -210,5 +193,4 @@ def generate_split_reports(
         _plot_confusion(yt, yp, class_names, threshold, group_dir / "confusion_superclass.png")
         _plot_pr(yt, yp, class_names, group_dir / "pr_curves.png")
         _plot_roc(yt, yp, class_names, group_dir / "roc_curves.png")
-        _plot_auc_bars(yt, yp, class_names, group_dir / "auc_curves.png")
         _table(yt, yp, class_names, threshold).to_csv(group_dir / "per_class_metrics.csv", index=False, encoding="utf-8-sig")
