@@ -1,0 +1,128 @@
+{
+  "OUTPUT_DIR": "C:\\Users\\bruno\\OneDrive\\Desktop\\Classification_ECG\\Dados_Processados",
+  "RESULTS_DIR": "C:\\Users\\bruno\\OneDrive\\Desktop\\Classification_ECG\\Resultados_CNN",
+  "TRAIN_BASES": [
+    "ptb-xl"
+  ],
+  "VAL_BASES": [
+    "ptb-xl"
+  ],
+  "TEST_BASES": [
+    "ptb-xl",
+    "ptb",
+    "cpsc_2018",
+    "cpsc_2018_extra",
+    "georgia",
+    "Chapman-Shaoxing-Ningbo"
+  ],
+  "STRICT_BASE_SPLIT": false,
+  "TRAIN_RATIO": 0.6,
+  "VAL_RATIO": 0.2,
+  "TEST_RATIO": 0.2,
+  "SPLIT_SEED": 42,
+  "STRATIFY_INTERNAL_SPLIT": true,
+  "PATIENT_LEVEL_SPLIT": true,
+  "PATIENT_ID_CSV_MAP": {
+    "ptb-xl": "ptbxl_database.csv"
+  },
+  "MAIN_SUPERCLASS_LIST": [
+    "CD",
+    "HYP",
+    "MI",
+    "NORM",
+    "STTC"
+  ],
+  "AUX_CLASS_LIST": [
+    "RHYTHM",
+    "FORM",
+    "PACE"
+  ],
+  "AUX_CLASS_ALIASES": {
+    "RHYTHM": [
+      "RHYTHM",
+      "RHYTHM_ARRHYTHMIA",
+      "Rhythm/Arrhythmia",
+      "Rhythm",
+      "Arrhythmia"
+    ],
+    "FORM": [
+      "FORM",
+      "AXIS_FORM_VOLTAGE",
+      "Axis/Form/Voltage Abnormality",
+      "Axis/Form",
+      "Form",
+      "Axis",
+      "Voltage"
+    ],
+    "PACE": [
+      "PACE",
+      "PACED",
+      "Paced Rhythm/Device Pattern",
+      "Paced Rhythm",
+      "Device Pattern",
+      "Pacing"
+    ]
+  },
+  "USE_AUX_HEAD": true,
+  "AUX_LOSS_WEIGHT": 0.15,
+  "AUX_LOSS_DECAY": true,
+  "AUX_LOSS_WEIGHT_FINAL": 0.05,
+  "TARGET_LEADS": 12,
+  "TARGET_SAMPLES": 5000,
+  "USE_META_FEATURES": false,
+  "META_FEATURE_DIM": 3,
+  "DATA_LOADING_MODE": "ram",
+  "RAM_DTYPE": "float32",
+  "EXCLUDE_WARNINGS": [
+    "nan_inf",
+    "flatline"
+  ],
+  "MIN_POSITIVE_MAIN_LABELS": 1,
+  "BATCH_SIZE_TRAIN": 64,
+  "EPOCHS": 50,
+  "LEARNING_RATE": 0.001,
+  "WEIGHT_DECAY": 0.0001,
+  "EARLY_STOPPING_PATIENCE": 10,
+  "LR_SCHEDULER": true,
+  "LR_FACTOR": 0.5,
+  "LR_PATIENCE": 5,
+  "LR_SCHEDULER_TYPE": "cosine",
+  "COSINE_T0": 10,
+  "COSINE_T_MULT": 2,
+  "COSINE_ETA_MIN": 1e-06,
+  "WARMUP_EPOCHS": 3,
+  "USE_MAIN_CLASS_WEIGHTS": true,
+  "USE_AUX_CLASS_WEIGHTS": true,
+  "CNN_CHANNELS": [
+    32,
+    64,
+    128
+  ],
+  "KERNEL_SIZE": 7,
+  "POOL_SIZE": 2,
+  "DROPOUT_RATE": 0.3,
+  "FC_HIDDEN_DIM": 256,
+  "USE_RESIDUAL_BLOCKS": true,
+  "N_RESIDUAL_PER_STAGE": 1,
+  "USE_ATTENTION_POOL": true,
+  "THRESHOLD_MAIN": 0.5,
+  "THRESHOLD_AUX": 0.5,
+  "USE_OPTIMAL_THRESHOLDS": true,
+  "USE_TEMPERATURE_SCALING": true,
+  "USE_AUGMENTATION": true,
+  "AUG_PROBABILITY": 0.5,
+  "AUG_LEAD_DROPOUT_PROB": 0.1,
+  "SEED": 42,
+  "GENERATE_ADVANCED_EVAL": true,
+  "GENERATE_CALIBRATION_PLOT": true,
+  "GENERATE_ROC_CURVES": true,
+  "GENERATE_PR_CURVES": true,
+  "GENERATE_MULTILABEL_CONFUSION": true,
+  "GENERATE_GRADCAM": true,
+  "GENERATE_METADATA_INFLUENCE": false,
+  "GRADCAM_NUM_EXAMPLES_PER_CLASS": 1,
+  "GRADCAM_TARGET_LAYER_NAME": "feature_extractor",
+  "GRADCAM_SMOOTHING_WINDOW": 25,
+  "METADATA_INFLUENCE_MAX_SAMPLES": null,
+  "METADATA_BASELINE_VALUE": 0.0
+}

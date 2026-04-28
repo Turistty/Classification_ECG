@@ -90,7 +90,7 @@ from tqdm import tqdm
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 OUTPUT_DIR   = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Dados_Processados"
-RESULTS_DIR  = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN_BaseSplit_Aux"
+RESULTS_DIR  = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN"
 
 # ── Split por base ─────────────────────────────────────────────────────────
 # Use exatamente os nomes que aparecem em metadata.csv/source_base.
@@ -108,8 +108,8 @@ RESULTS_DIR  = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_C
 #   teste: ptb
 #
 # Ajuste conforme o experimento desejado.
-TRAIN_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
-VAL_BASES   = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
+TRAIN_BASES = ["ptb-xl"]
+VAL_BASES   = ["ptb-xl"]
 TEST_BASES  = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
 
 
@@ -236,7 +236,7 @@ GENERATE_ROC_CURVES = True
 GENERATE_PR_CURVES = True
 GENERATE_MULTILABEL_CONFUSION = True
 GENERATE_GRADCAM = True
-GENERATE_METADATA_INFLUENCE = True
+GENERATE_METADATA_INFLUENCE = False
 
 # Grad-CAM: escolhe automaticamente exemplo true positive de maior confiança por classe.
 # Se não houver true positive para uma classe, usa o maior score previsto daquela classe.
