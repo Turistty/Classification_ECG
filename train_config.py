@@ -9,17 +9,17 @@ Arquivo dedicado para centralizar todos os knobs do experimento.
 # Pasta gerada no preprocessamento (metadata.csv + batches/*.npz).
 OUTPUT_DIR = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Dados_Processados"
 # Pasta onde serão salvos checkpoints, métricas, plots e reports.
-RESULTS_DIR = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN_BaseSplit_Aux"
+RESULTS_DIR = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN_head"
 
 # ==============================
 # Split por base
 # ==============================
 # Bases usadas no treino.
-TRAIN_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia", "Chapman-Shaoxing-Ningbo"]
+TRAIN_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
 # Bases usadas na validação.
-VAL_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia", "Chapman-Shaoxing-Ningbo"]
+VAL_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
 # Bases usadas no teste.
-TEST_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia", "Chapman-Shaoxing-Ningbo"]
+TEST_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
 
 # Se True, proíbe a mesma base em mais de um split.
 STRICT_BASE_SPLIT = False
@@ -49,7 +49,7 @@ TARGET_SAMPLES = 5000
 # Ativa/desativa cabeça auxiliar.
 USE_AUX_HEAD = True
 # Peso da loss auxiliar na loss total: total = main + AUX_LOSS_WEIGHT * aux.
-AUX_LOSS_WEIGHT = 0.30
+AUX_LOSS_WEIGHT = 0.20
 # Classes da cabeça auxiliar.
 AUX_CLASS_LIST = ["RHYTHM", "FORM", "PACE"]
 NUM_AUX_CLASSES = len(AUX_CLASS_LIST)
@@ -60,7 +60,7 @@ AUX_CLASS_ALIASES = {
     "PACE": ["PACE", "PACED", "Paced Rhythm/Device Pattern", "Paced Rhythm", "Device Pattern", "Pacing"],
 }
 # Se True, mantém exames sem label auxiliar (vetor auxiliar zerado).
-KEEP_SAMPLES_WITHOUT_AUX_LABEL = True
+KEEP_SAMPLES_WITHOUT_AUX_LABEL = False
 
 # ==============================
 # Features de metadados
@@ -91,7 +91,7 @@ MIN_POSITIVE_MAIN_LABELS = 1
 # ==============================
 # Treinamento
 # ==============================
-BATCH_SIZE_TRAIN = 64
+BATCH_SIZE_TRAIN = 128
 EPOCHS = 50
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
@@ -122,7 +122,7 @@ THRESHOLD_MAIN = 0.5
 THRESHOLD_AUX = 0.5
 SAVE_PREDICTIONS = True
 
-# Flags legadas de avaliação avançada (mantidas para compatibilidade com funções antigas em train.py).
+# Flags legadas de avaliação avançada.
 GENERATE_ADVANCED_EVAL = False
 GENERATE_ROC_CURVES = False
 GENERATE_PR_CURVES = False
@@ -135,7 +135,7 @@ GENERATE_METADATA_INFLUENCE = False
 # Grad-CAM
 # ==============================
 # Número de exemplos por superclasse (solicitado: 2 positivos por superclasse).
-GRADCAM_NUM_EXAMPLES_PER_CLASS = 2
+GRADCAM_NUM_EXAMPLES_PER_CLASS = 1
 # Nome da camada alvo (mantido por compatibilidade).
 GRADCAM_TARGET_LAYER_NAME = "feature_extractor"
 # Janela de suavização do mapa 1D.

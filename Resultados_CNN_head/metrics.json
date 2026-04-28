@@ -1,0 +1,63 @@
+{
+  "threshold": 0.5,
+  "n_samples": 11160,
+  "classes": [
+    "CD",
+    "HYP",
+    "MI",
+    "NORM",
+    "STTC"
+  ],
+  "per_class": {
+    "CD": {
+      "support": 2417,
+      "predicted_positive": 3320,
+      "precision": 0.575,
+      "recall": 0.7898220935043442,
+      "f1": 0.6655046191389228,
+      "auroc": 0.8997050941775939,
+      "auprc": 0.7936619328755183
+    },
+    "HYP": {
+      "support": 2039,
+      "predicted_positive": 2069,
+      "precision": 0.7245045915901401,
+      "recall": 0.735164296223639,
+      "f1": 0.7297955209347614,
+      "auroc": 0.9339299620560995,
+      "auprc": 0.7883325168690105
+    },
+    "MI": {
+      "support": 1527,
+      "predicted_positive": 2262,
+      "precision": 0.5503978779840849,
+      "recall": 0.8153241650294696,
+      "f1": 0.6571654790182107,
+      "auroc": 0.9345958701367021,
+      "auprc": 0.7459039478900544
+    },
+    "NORM": {
+      "support": 5729,
+      "predicted_positive": 5758,
+      "precision": 0.881382424452935,
+      "recall": 0.8858439518240531,
+      "f1": 0.8836075563680682,
+      "auroc": 0.9502905731238653,
+      "auprc": 0.9529711631215029
+    },
+    "STTC": {
+      "support": 4620,
+      "predicted_positive": 4106,
+      "precision": 0.8317096931320019,
+      "recall": 0.7391774891774892,
+      "f1": 0.7827183130873252,
+      "auroc": 0.9114272144776733,
+      "auprc": 0.876480067224097
+    }
+  },
+  "extra": {
+    "aux_head_enabled": true,
+    "aux_loss_weight": 0.2,
+    "aux_loss_influence_on_test": 0.18569009823861288
+  }
+}

@@ -42,11 +42,6 @@ Saídas:
     reports/
       global/ e uma pasta por base de teste
 
-Dependências:
-  pip install numpy pandas torch scikit-learn matplotlib tqdm
-
-Uso:
-  python train_simple_cnn_ecg_base_split_aux.py
 """
 
 from __future__ import annotations
