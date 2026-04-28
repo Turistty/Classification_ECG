@@ -83,166 +83,14 @@ from sklearn.metrics import (
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-
-# =============================================================================
-# Variáveis globais
-# =============================================================================
-
-# ── Paths ──────────────────────────────────────────────────────────────────
-OUTPUT_DIR   = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Dados_Processados"
-RESULTS_DIR  = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN_BaseSplit_Aux"
-
-# ── Split por base ─────────────────────────────────────────────────────────
-# Use exatamente os nomes que aparecem em metadata.csv/source_base.
-# Pelo seu relatório, os nomes são:
-#   "Chapman-Shaoxing-Ningbo"
-#   "cpsc_2018"
-#   "cpsc_2018_extra"
-#   "georgia"
-#   "ptb"
-#   "ptb-xl"
-#
-# Exemplo conservador de generalização cross-base:
-#   treino: Chapman + CPSC + Georgia
-#   validação: ptb-xl
-#   teste: ptb
-#
-# Ajuste conforme o experimento desejado.
-TRAIN_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
-VAL_BASES   = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
-TEST_BASES  = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
-
-
-# Se True, impede que a mesma base apareça em mais de um split.
-# Se False, permite usar a mesma base em train/val/test.
-# Quando a mesma base aparece em mais de um split, o script faz split interno aleatório
-# dentro dessa base, respeitando TRAIN_RATIO/VAL_RATIO/TEST_RATIO.
-STRICT_BASE_SPLIT = False
-
-# Razões usadas apenas para bases que aparecem em mais de um split.
-# Exemplo:
-#   TRAIN_BASES = ["ptb-xl"]
-#   VAL_BASES   = ["ptb-xl"]
-#   TEST_BASES  = ["ptb-xl"]
-# então ptb-xl será dividida internamente em 70/15/15.
-TRAIN_RATIO = 0.60
-VAL_RATIO   = 0.20
-TEST_RATIO  = 0.20
-SPLIT_SEED  = 42
-
-# Se True, para bases compartilhadas entre splits, estratifica pelo primeiro label principal positivo.
-STRATIFY_INTERNAL_SPLIT = True
-
-# ── Dados ──────────────────────────────────────────────────────────────────
-MAIN_SUPERCLASS_LIST = ["CD", "HYP", "MI", "NORM", "STTC"]
-NUM_MAIN_CLASSES     = len(MAIN_SUPERCLASS_LIST)
-
-TARGET_LEADS    = 12
-TARGET_SAMPLES  = 5000          # 500 Hz × 10 s
-
-# ── Cabeça auxiliar: achados do ECG, não saída diagnóstica final ───────────
-USE_AUX_HEAD = True
-AUX_LOSS_WEIGHT = 0.30
-
-# IDs canônicos da cabeça auxiliar. São nomes internos do treino.
-AUX_CLASS_LIST = ["RHYTHM", "FORM", "PACE"]
-NUM_AUX_CLASSES = len(AUX_CLASS_LIST)
-
-# Mapeamento flexível: procura tanto em metadata["superclass_id"] quanto em
-# metadata["superclass"]. Isso evita depender do nome exato usado no Map.csv.
-AUX_CLASS_ALIASES = {
-    "RHYTHM": [
-        "RHYTHM", "RHYTHM_ARRHYTHMIA", "Rhythm/Arrhythmia",
-        "Rhythm", "Arrhythmia"
-    ],
-    "FORM": [
-        "FORM", "AXIS_FORM_VOLTAGE", "Axis/Form/Voltage Abnormality",
-        "Axis/Form", "Form", "Axis", "Voltage"
-    ],
-    "PACE": [
-        "PACE", "PACED", "Paced Rhythm/Device Pattern",
-        "Paced Rhythm", "Device Pattern", "Pacing"
-    ],
-}
-
-# Se True, exames sem nenhum label auxiliar continuam no treino com vetor auxiliar 0.
-# Se False, esses exames seriam removidos. Para multitask, geralmente manter True.
-KEEP_SAMPLES_WITHOUT_AUX_LABEL = True
-
-# ── Metadados clínicos como features extras ────────────────────────────────
-USE_META_FEATURES = False        # Se True, concatena age + sex ao vetor após CNN
-META_FEATURE_DIM  = 3           # age (1) + sex one-hot (2: Male/Female, Unknown=00)
-
-# ── Modo de carregamento ───────────────────────────────────────────────────
-# "lazy": carrega cada batch .npz sob demanda com cache LRU.
-# "ram" : carrega todos os exames filtrados do split na RAM antes do treino.
-DATA_LOADING_MODE = "ram"      # "lazy" ou "ram"
-RAM_DTYPE = "float32"           # "float32" recomendado. "float16" reduz RAM, pode perder precisão.
-NPZ_CACHE_SIZE = 4              # usado apenas no modo lazy
-
-# ── Exclusão de dados de baixa qualidade ──────────────────────────────────
-EXCLUDE_WARNINGS = ["nan_inf", "flatline"]   # [] para usar todos
-MIN_POSITIVE_MAIN_LABELS = 1                 # remove exames sem nenhuma classe principal
-
-# ── Treinamento ────────────────────────────────────────────────────────────
-BATCH_SIZE_TRAIN = 64
-EPOCHS           = 50
-LEARNING_RATE    = 1e-3
-WEIGHT_DECAY     = 1e-4
-EARLY_STOPPING_PATIENCE = 10
-LR_SCHEDULER     = True
-LR_FACTOR        = 0.5
-LR_PATIENCE      = 5
-
-# ── Balanceamento de classes ───────────────────────────────────────────────
-USE_MAIN_CLASS_WEIGHTS = True
-USE_AUX_CLASS_WEIGHTS  = True
-
-# ── Arquitetura CNN ────────────────────────────────────────────────────────
-CNN_CHANNELS   = [32, 64, 128]
-KERNEL_SIZE    = 7
-POOL_SIZE      = 2
-DROPOUT_RATE   = 0.3
-FC_HIDDEN_DIM  = 256
-
-# ── Avaliação ──────────────────────────────────────────────────────────────
-THRESHOLD_MAIN = 0.5
-THRESHOLD_AUX  = 0.5
-SAVE_PREDICTIONS = True
-
-# Plots/artefatos avançados solicitados
-GENERATE_ADVANCED_EVAL = True
-GENERATE_CALIBRATION_PLOT = True
-GENERATE_ROC_CURVES = True
-GENERATE_PR_CURVES = True
-GENERATE_MULTILABEL_CONFUSION = True
-GENERATE_GRADCAM = True
-GENERATE_METADATA_INFLUENCE = True
-
-# Grad-CAM: escolhe automaticamente exemplo true positive de maior confiança por classe.
-# Se não houver true positive para uma classe, usa o maior score previsto daquela classe.
-GRADCAM_NUM_EXAMPLES_PER_CLASS = 1
-GRADCAM_TARGET_LAYER_NAME = "feature_extractor"  # última Conv1d dentro do feature_extractor
-GRADCAM_SMOOTHING_WINDOW = 25
-
-# Influência dos metadados:
-# mede diferença nas probabilidades quando metadados reais são substituídos por zero.
-# Isso não é causalidade clínica; é uma análise de sensibilidade do modelo.
-METADATA_INFLUENCE_MAX_SAMPLES = None  # None = test inteiro
-METADATA_BASELINE_VALUE = 0.0
-
-# ── Reprodutibilidade ──────────────────────────────────────────────────────
-SEED = 42
-
-# ── Outros ─────────────────────────────────────────────────────────────────
-NUM_WORKERS = 0                 # Windows: 0 evita problemas com npz + multiprocessing.
-PIN_MEMORY = True
-AGE_NORMALIZATION_DIVISOR = 100.0
+from reports import build_metrics_json as build_metrics_json_report, generate_split_reports, plot_history_simple
+from train_config import *
 
 
 # =============================================================================
 # Setup
 # =============================================================================
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -329,18 +177,8 @@ def save_config(results_dir: Path) -> None:
         "THRESHOLD_MAIN": THRESHOLD_MAIN,
         "THRESHOLD_AUX": THRESHOLD_AUX,
         "SEED": SEED,
-        "GENERATE_ADVANCED_EVAL": GENERATE_ADVANCED_EVAL,
-        "GENERATE_CALIBRATION_PLOT": GENERATE_CALIBRATION_PLOT,
-        "GENERATE_ROC_CURVES": GENERATE_ROC_CURVES,
-        "GENERATE_PR_CURVES": GENERATE_PR_CURVES,
-        "GENERATE_MULTILABEL_CONFUSION": GENERATE_MULTILABEL_CONFUSION,
-        "GENERATE_GRADCAM": GENERATE_GRADCAM,
-        "GENERATE_METADATA_INFLUENCE": GENERATE_METADATA_INFLUENCE,
         "GRADCAM_NUM_EXAMPLES_PER_CLASS": GRADCAM_NUM_EXAMPLES_PER_CLASS,
-        "GRADCAM_TARGET_LAYER_NAME": GRADCAM_TARGET_LAYER_NAME,
         "GRADCAM_SMOOTHING_WINDOW": GRADCAM_SMOOTHING_WINDOW,
-        "METADATA_INFLUENCE_MAX_SAMPLES": METADATA_INFLUENCE_MAX_SAMPLES,
-        "METADATA_BASELINE_VALUE": METADATA_BASELINE_VALUE,
     }
     (results_dir / "config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -1371,13 +1209,34 @@ def evaluate_test(
     print("\nMétricas por classe principal:")
     print(per_class_main)
 
-    plot_results(results_dir, test_out["y_main"], main_prob, MAIN_SUPERCLASS_LIST, THRESHOLD_MAIN, "main")
+    build_metrics_json_report(
+        y_true=test_out["y_main"],
+        y_prob=main_prob,
+        class_names=MAIN_SUPERCLASS_LIST,
+        threshold=THRESHOLD_MAIN,
+        output_path=results_dir / "metrics.json",
+        extra={
+            "aux_head_enabled": bool(USE_AUX_HEAD),
+            "aux_loss_weight": float(AUX_LOSS_WEIGHT),
+            "aux_loss_influence_on_test": float((AUX_LOSS_WEIGHT * test_out["aux_loss"]) / max(test_out["loss"], 1e-12)) if USE_AUX_HEAD else 0.0,
+        },
+    )
 
-    run_advanced_evaluation_outputs(
+    generate_split_reports(
+        y_true=test_out["y_main"],
+        y_prob=main_prob,
+        test_bases=test_df["source_base"].astype(str).tolist(),
+        class_names=MAIN_SUPERCLASS_LIST,
+        threshold=THRESHOLD_MAIN,
+        output_root=results_dir / "reports",
+    )
+
+    generate_gradcam_examples(
         model=model,
         test_df=test_df,
         y_true=test_out["y_main"],
         y_prob=main_prob,
+        class_names=MAIN_SUPERCLASS_LIST,
         results_dir=results_dir,
         device=device,
     )
@@ -1842,14 +1701,9 @@ def generate_gradcam_examples(
         prob = y_prob[:, class_idx]
 
         tp_candidates = np.where((yt == 1) & (prob >= THRESHOLD_MAIN))[0]
-        if len(tp_candidates) > 0:
-            ordered = tp_candidates[np.argsort(prob[tp_candidates])[::-1]]
-            candidate_type = "high_confidence_true_positive"
-        else:
-            ordered = np.argsort(prob)[::-1]
-            candidate_type = "highest_probability_no_tp_available"
-
+        ordered = tp_candidates[np.argsort(prob[tp_candidates])[::-1]] if len(tp_candidates) > 0 else np.array([], dtype=int)
         selected = ordered[:GRADCAM_NUM_EXAMPLES_PER_CLASS]
+        candidate_type = "high_confidence_true_positive"
 
         for rank, sample_idx in enumerate(selected):
             item = get_sample_from_dataset(dataset, int(sample_idx))
@@ -2149,7 +2003,7 @@ def main() -> None:
     df = load_and_prepare_metadata(output_dir, results_dir)
 
     model, history = train_model(df, results_dir, device)
-    plot_history(results_dir, history)
+    plot_history_simple(results_dir, history)
 
     evaluate_test(model, df, results_dir, device)
 
