@@ -2,10 +2,20 @@
   "OUTPUT_DIR": "C:\\Users\\bruno\\OneDrive\\Desktop\\Classification_ECG\\Dados_Processados",
   "RESULTS_DIR": "C:\\Users\\bruno\\OneDrive\\Desktop\\Classification_ECG\\Resultados_CNN",
   "TRAIN_BASES": [
-    "ptb-xl"
+    "ptb-xl",
+    "ptb",
+    "cpsc_2018",
+    "cpsc_2018_extra",
+    "georgia",
+    "Chapman-Shaoxing-Ningbo"
   ],
   "VAL_BASES": [
-    "ptb-xl"
+    "ptb-xl",
+    "ptb",
+    "cpsc_2018",
+    "cpsc_2018_extra",
+    "georgia",
+    "Chapman-Shaoxing-Ningbo"
   ],
   "TEST_BASES": [
     "ptb-xl",

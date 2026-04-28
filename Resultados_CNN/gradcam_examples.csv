@@ -1,6 +1,6 @@
 ﻿class,rank,exam_id,sample_index,probability,true_label,candidate_type,plot_path
-CD,0,A1670,26089,0.9999979734420776,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_CD_rank0_A1670.png
-HYP,0,JS42600,23993,0.9999936819076538,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_HYP_rank0_JS42600.png
-MI,0,HR19148,44658,0.9998340606689453,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_MI_rank0_HR19148.png
-NORM,0,JS34698,18039,0.9998781681060791,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_NORM_rank0_JS34698.png
-STTC,0,JS10198,5744,0.9994363188743591,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_STTC_rank0_JS10198.png
+CD,0,A5800,5787,0.9999874830245972,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_CD_rank0_A5800.png
+HYP,0,JS20524,2558,0.999634861946106,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_HYP_rank0_JS20524.png
+MI,0,HR11255,9081,0.9991803765296936,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_MI_rank0_HR11255.png
+NORM,0,HR18148,10419,0.999916672706604,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_NORM_rank0_HR18148.png
+STTC,0,JS04713,553,0.9987314343452454,1,high_confidence_true_positive,C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN\plots\gradcam\gradcam_STTC_rank0_JS04713.png

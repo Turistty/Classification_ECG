@@ -108,8 +108,8 @@ RESULTS_DIR  = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_C
 #   teste: ptb
 #
 # Ajuste conforme o experimento desejado.
-TRAIN_BASES = ["ptb-xl"]
-VAL_BASES   = ["ptb-xl"]
+TRAIN_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
+VAL_BASES   = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
 TEST_BASES  = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
 
 
