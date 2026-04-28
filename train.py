@@ -132,6 +132,10 @@ SPLIT_SEED  = 42
 
 # Se True, para bases compartilhadas entre splits, estratifica pelo primeiro label principal positivo.
 STRATIFY_INTERNAL_SPLIT = True
+PATIENT_LEVEL_SPLIT = True
+PATIENT_ID_CSV_MAP = {
+    "ptb-xl": "ptbxl_database.csv",
+}
 
 # ── Dados ──────────────────────────────────────────────────────────────────
 MAIN_SUPERCLASS_LIST = ["CD", "HYP", "MI", "NORM", "STTC"]
@@ -142,7 +146,12 @@ TARGET_SAMPLES  = 5000          # 500 Hz × 10 s
 
 # ── Cabeça auxiliar: achados do ECG, não saída diagnóstica final ───────────
 USE_AUX_HEAD = True
-AUX_LOSS_WEIGHT = 0.30
+AUX_LOSS_WEIGHT = 0.15
+AUX_LOSS_DECAY = True
+AUX_LOSS_WEIGHT_FINAL = 0.05
+USE_DOMAIN_ADVERSARIAL = True
+DOMAIN_LOSS_WEIGHT = 0.10
+GRL_LAMBDA = 1.0
 
 # IDs canônicos da cabeça auxiliar. São nomes internos do treino.
 AUX_CLASS_LIST = ["RHYTHM", "FORM", "PACE"]
@@ -193,6 +202,11 @@ EARLY_STOPPING_PATIENCE = 10
 LR_SCHEDULER     = True
 LR_FACTOR        = 0.5
 LR_PATIENCE      = 5
+LR_SCHEDULER_TYPE = "cosine"   # "plateau" ou "cosine"
+COSINE_T0 = 10
+COSINE_T_MULT = 2
+COSINE_ETA_MIN = 1e-6
+WARMUP_EPOCHS = 3
 
 # ── Balanceamento de classes ───────────────────────────────────────────────
 USE_MAIN_CLASS_WEIGHTS = True
@@ -204,11 +218,19 @@ KERNEL_SIZE    = 7
 POOL_SIZE      = 2
 DROPOUT_RATE   = 0.3
 FC_HIDDEN_DIM  = 256
+USE_RESIDUAL_BLOCKS = True
+N_RESIDUAL_PER_STAGE = 1
+USE_ATTENTION_POOL = True
 
 # ── Avaliação ──────────────────────────────────────────────────────────────
 THRESHOLD_MAIN = 0.5
 THRESHOLD_AUX  = 0.5
+USE_OPTIMAL_THRESHOLDS = True
+USE_TEMPERATURE_SCALING = True
 SAVE_PREDICTIONS = True
+USE_AUGMENTATION = True
+AUG_PROBABILITY = 0.5
+AUG_LEAD_DROPOUT_PROB = 0.1
 
 # Plots/artefatos avançados solicitados
 GENERATE_ADVANCED_EVAL = True
@@ -298,11 +320,18 @@ def save_config(results_dir: Path) -> None:
         "TEST_RATIO": TEST_RATIO,
         "SPLIT_SEED": SPLIT_SEED,
         "STRATIFY_INTERNAL_SPLIT": STRATIFY_INTERNAL_SPLIT,
+        "PATIENT_LEVEL_SPLIT": PATIENT_LEVEL_SPLIT,
+        "PATIENT_ID_CSV_MAP": PATIENT_ID_CSV_MAP,
         "MAIN_SUPERCLASS_LIST": MAIN_SUPERCLASS_LIST,
         "AUX_CLASS_LIST": AUX_CLASS_LIST,
         "AUX_CLASS_ALIASES": AUX_CLASS_ALIASES,
         "USE_AUX_HEAD": USE_AUX_HEAD,
         "AUX_LOSS_WEIGHT": AUX_LOSS_WEIGHT,
+        "AUX_LOSS_DECAY": AUX_LOSS_DECAY,
+        "AUX_LOSS_WEIGHT_FINAL": AUX_LOSS_WEIGHT_FINAL,
+        "USE_DOMAIN_ADVERSARIAL": USE_DOMAIN_ADVERSARIAL,
+        "DOMAIN_LOSS_WEIGHT": DOMAIN_LOSS_WEIGHT,
+        "GRL_LAMBDA": GRL_LAMBDA,
         "TARGET_LEADS": TARGET_LEADS,
         "TARGET_SAMPLES": TARGET_SAMPLES,
         "USE_META_FEATURES": USE_META_FEATURES,
@@ -319,6 +348,11 @@ def save_config(results_dir: Path) -> None:
         "LR_SCHEDULER": LR_SCHEDULER,
         "LR_FACTOR": LR_FACTOR,
         "LR_PATIENCE": LR_PATIENCE,
+        "LR_SCHEDULER_TYPE": LR_SCHEDULER_TYPE,
+        "COSINE_T0": COSINE_T0,
+        "COSINE_T_MULT": COSINE_T_MULT,
+        "COSINE_ETA_MIN": COSINE_ETA_MIN,
+        "WARMUP_EPOCHS": WARMUP_EPOCHS,
         "USE_MAIN_CLASS_WEIGHTS": USE_MAIN_CLASS_WEIGHTS,
         "USE_AUX_CLASS_WEIGHTS": USE_AUX_CLASS_WEIGHTS,
         "CNN_CHANNELS": CNN_CHANNELS,
@@ -326,8 +360,16 @@ def save_config(results_dir: Path) -> None:
         "POOL_SIZE": POOL_SIZE,
         "DROPOUT_RATE": DROPOUT_RATE,
         "FC_HIDDEN_DIM": FC_HIDDEN_DIM,
+        "USE_RESIDUAL_BLOCKS": USE_RESIDUAL_BLOCKS,
+        "N_RESIDUAL_PER_STAGE": N_RESIDUAL_PER_STAGE,
+        "USE_ATTENTION_POOL": USE_ATTENTION_POOL,
         "THRESHOLD_MAIN": THRESHOLD_MAIN,
         "THRESHOLD_AUX": THRESHOLD_AUX,
+        "USE_OPTIMAL_THRESHOLDS": USE_OPTIMAL_THRESHOLDS,
+        "USE_TEMPERATURE_SCALING": USE_TEMPERATURE_SCALING,
+        "USE_AUGMENTATION": USE_AUGMENTATION,
+        "AUG_PROBABILITY": AUG_PROBABILITY,
+        "AUG_LEAD_DROPOUT_PROB": AUG_LEAD_DROPOUT_PROB,
         "SEED": SEED,
         "GENERATE_ADVANCED_EVAL": GENERATE_ADVANCED_EVAL,
         "GENERATE_CALIBRATION_PLOT": GENERATE_CALIBRATION_PLOT,
@@ -497,6 +539,28 @@ def _split_indices_for_group(group: pd.DataFrame) -> Tuple[np.ndarray, np.ndarra
     return np.array(train_indices), np.array(val_indices), np.array(test_indices)
 
 
+def _split_patient_groups(group: pd.DataFrame, patient_col: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(SPLIT_SEED)
+    patients = group[patient_col].dropna().astype(str).unique().tolist()
+    if not patients:
+        return _split_indices_for_group(group)
+    rng.shuffle(patients)
+    n = len(patients)
+    n_train = int(round(n * TRAIN_RATIO))
+    n_val = int(round(n * VAL_RATIO))
+    if n_train + n_val > n:
+        n_val = max(0, n - n_train)
+
+    p_train = set(patients[:n_train])
+    p_val = set(patients[n_train:n_train + n_val])
+    p_test = set(patients[n_train + n_val:])
+
+    train_idx = group.index[group[patient_col].astype(str).isin(p_train)].to_numpy()
+    val_idx = group.index[group[patient_col].astype(str).isin(p_val)].to_numpy()
+    test_idx = group.index[group[patient_col].astype(str).isin(p_test)].to_numpy()
+    return train_idx, val_idx, test_idx
+
+
 def assign_split_by_base(df: pd.DataFrame) -> pd.DataFrame:
     """
     Split por base com dois comportamentos:
@@ -546,8 +610,15 @@ def assign_split_by_base(df: pd.DataFrame) -> pd.DataFrame:
     for base in shared_bases:
         base_mask = df["source_base"] == base
         group = df.loc[base_mask].copy()
-
-        train_idx, val_idx, test_idx = _split_indices_for_group(group)
+        patient_col = "_patient_id"
+        if PATIENT_LEVEL_SPLIT and patient_col in group.columns and group[patient_col].notna().any():
+            train_idx, val_idx, test_idx = _split_patient_groups(group, patient_col=patient_col)
+            print(
+                f"[MELHORIA] Split por patient_id ativo para base {base} "
+                f"(N pacientes únicos: {group[patient_col].nunique():,})"
+            )
+        else:
+            train_idx, val_idx, test_idx = _split_indices_for_group(group)
 
         # Só atribui aos splits em que a base foi declarada.
         # Se a base estiver em train/test mas não em val, a parte val é redistribuída para train.
@@ -595,6 +666,29 @@ def load_and_prepare_metadata(output_dir: Path, results_dir: Path) -> pd.DataFra
     selected_bases = set(TRAIN_BASES).union(set(VAL_BASES)).union(set(TEST_BASES))
     df = df[df["source_base"].isin(selected_bases)].copy()
     selected_n = len(df)
+
+    if PATIENT_LEVEL_SPLIT:
+        df["_patient_id"] = np.nan
+        for base, csv_name in PATIENT_ID_CSV_MAP.items():
+            sub_mask = df["source_base"].astype(str) == str(base)
+            if not sub_mask.any():
+                continue
+            candidates = [
+                output_dir / base / csv_name,
+                output_dir / csv_name,
+            ]
+            patient_csv = next((p for p in candidates if p.exists()), None)
+            if patient_csv is None:
+                continue
+            try:
+                map_df = pd.read_csv(patient_csv, dtype=str)
+                if "ecg_id" not in map_df.columns or "patient_id" not in map_df.columns:
+                    continue
+                map_df = map_df[["ecg_id", "patient_id"]].dropna()
+                map_dict = dict(zip(map_df["ecg_id"].astype(str), map_df["patient_id"].astype(str)))
+                df.loc[sub_mask, "_patient_id"] = df.loc[sub_mask, "exam_id"].astype(str).map(map_dict)
+            except Exception as exc:
+                print(f"[WARN] Falha ao carregar patient_id para {base}: {exc}")
 
     # Remove warnings definidos.
     if EXCLUDE_WARNINGS:
@@ -654,6 +748,14 @@ def load_and_prepare_metadata(output_dir: Path, results_dir: Path) -> pd.DataFra
     # Agora atribui split por base. Se a base estiver repetida em mais de um split,
     # o script divide internamente conforme TRAIN_RATIO/VAL_RATIO/TEST_RATIO.
     df = assign_split_by_base(df)
+
+    base_classes = sorted(df["source_base"].astype(str).unique().tolist())
+    base_to_idx = {b: i for i, b in enumerate(base_classes)}
+    df["base_idx"] = df["source_base"].astype(str).map(base_to_idx).astype(int)
+    (results_dir / "base_class_mapping.json").write_text(
+        json.dumps(base_to_idx, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     print(f"Metadata inicial: {initial_n}")
     print(f"Após seleção por base: {selected_n}")
@@ -728,10 +830,43 @@ class NPZLRUCache:
         return x, exam_ids
 
 
+class ECGAugmentation:
+    def __init__(self, p: float = 0.5, lead_dropout_prob: float = 0.1):
+        self.p = p
+        self.lead_dropout_prob = lead_dropout_prob
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        out = np.asarray(x, dtype=np.float32).copy()
+        amp = float(np.max(np.abs(out)) + 1e-8)
+
+        if np.random.rand() < self.p:
+            out *= np.random.uniform(0.8, 1.2)
+        if np.random.rand() < self.p:
+            std = np.random.uniform(0.001, 0.01) * amp
+            out += np.random.normal(0.0, std, size=out.shape).astype(np.float32)
+        if np.random.rand() < self.p:
+            t = np.arange(out.shape[1], dtype=np.float32) / 500.0
+            freq = np.random.uniform(0.05, 0.5)
+            bamp = np.random.uniform(0.0, 0.05) * amp
+            out += (bamp * np.sin(2.0 * np.pi * freq * t))[None, :].astype(np.float32)
+        if np.random.rand() < self.p:
+            shift = int(np.random.randint(-250, 251))
+            out = np.roll(out, shift=shift, axis=1)
+
+        if np.random.rand() < self.lead_dropout_prob:
+            valid = [i for i in range(out.shape[0]) if i != 1]  # nunca zerar derivação II
+            if valid:
+                lead_idx = int(np.random.choice(valid))
+                out[lead_idx] = 0.0
+
+        return out
+
+
 class ECGLazyDataset(Dataset):
     def __init__(self, df: pd.DataFrame):
         self.df = df.reset_index(drop=True).copy()
         self.cache = NPZLRUCache(max_size=NPZ_CACHE_SIZE)
+        self.augmentation = ECGAugmentation(AUG_PROBABILITY, AUG_LEAD_DROPOUT_PROB)
         self.main_cols = [f"main_{sc}" for sc in MAIN_SUPERCLASS_LIST]
         self.aux_cols = [f"aux_{ac}" for ac in AUX_CLASS_LIST]
 
@@ -743,12 +878,15 @@ class ECGLazyDataset(Dataset):
 
         x_batch, _ = self.cache.get(str(row["_batch_path"]))
         x = x_batch[int(row["batch_index"])]
+        if USE_AUGMENTATION and str(row.get("split", "")) == "train":
+            x = self.augmentation(x)
 
         if x.shape != (TARGET_LEADS, TARGET_SAMPLES):
             raise ValueError(f"Shape inválido para exam_id={row['exam_id']}: {x.shape}")
 
         y_main = row[self.main_cols].astype(float).to_numpy(dtype=np.float32)
         y_aux = row[self.aux_cols].astype(float).to_numpy(dtype=np.float32)
+        y_base = int(row["base_idx"])
         meta = build_meta_features(row.get("age", ""), row.get("sex", ""))
 
         return {
@@ -756,6 +894,7 @@ class ECGLazyDataset(Dataset):
             "meta": torch.from_numpy(meta),
             "y_main": torch.from_numpy(y_main),
             "y_aux": torch.from_numpy(y_aux),
+            "y_base": torch.tensor(y_base, dtype=torch.long),
             "exam_id": str(row["exam_id"]),
         }
 
@@ -765,6 +904,8 @@ class ECGRamDataset(Dataset):
         self.df = df.reset_index(drop=True).copy()
         self.main_cols = [f"main_{sc}" for sc in MAIN_SUPERCLASS_LIST]
         self.aux_cols = [f"aux_{ac}" for ac in AUX_CLASS_LIST]
+        self.split_name = split_name
+        self.augmentation = ECGAugmentation(AUG_PROBABILITY, AUG_LEAD_DROPOUT_PROB)
 
         dtype = np.float16 if RAM_DTYPE.lower() == "float16" else np.float32
 
@@ -785,6 +926,7 @@ class ECGRamDataset(Dataset):
 
         self.y_main = self.df[self.main_cols].astype(float).to_numpy(dtype=np.float32)
         self.y_aux = self.df[self.aux_cols].astype(float).to_numpy(dtype=np.float32)
+        self.y_base = self.df["base_idx"].astype(int).to_numpy()
         self.meta = np.stack([build_meta_features(r.get("age", ""), r.get("sex", "")) for _, r in self.df.iterrows()])
         self.exam_ids = self.df["exam_id"].astype(str).tolist()
 
@@ -795,11 +937,15 @@ class ECGRamDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor | str]:
+        x = np.asarray(self.x[index], dtype=np.float32)
+        if USE_AUGMENTATION and self.split_name == "train":
+            x = self.augmentation(x)
         return {
-            "x": torch.from_numpy(np.asarray(self.x[index], dtype=np.float32)),
+            "x": torch.from_numpy(x),
             "meta": torch.from_numpy(self.meta[index]),
             "y_main": torch.from_numpy(self.y_main[index]),
             "y_aux": torch.from_numpy(self.y_aux[index]),
+            "y_base": torch.tensor(int(self.y_base[index]), dtype=torch.long),
             "exam_id": self.exam_ids[index],
         }
 
@@ -817,6 +963,58 @@ def make_dataset(df: pd.DataFrame, split_name: str) -> Dataset:
 # Modelo
 # =============================================================================
 
+class ResBlock1D(nn.Module):
+    def __init__(self, channels: int, kernel_size: int = 7, dropout: float = 0.0):
+        super().__init__()
+        p = kernel_size // 2
+        self.net = nn.Sequential(
+            nn.Conv1d(channels, channels, kernel_size, padding=p, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv1d(channels, channels, kernel_size, padding=p, bias=False),
+            nn.BatchNorm1d(channels),
+        )
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(x + self.net(x))
+
+
+class TemporalAttentionPool(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        hidden = max(1, channels // 4)
+        self.attn = nn.Sequential(
+            nn.Conv1d(channels, hidden, kernel_size=1, bias=False),
+            nn.Tanh(),
+            nn.Conv1d(hidden, 1, kernel_size=1, bias=False),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w = torch.softmax(self.attn(x), dim=-1)
+        return (x * w).sum(dim=-1)
+
+
+class GradientReversalFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, lambd: float) -> torch.Tensor:
+        ctx.lambd = lambd
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
+        return -ctx.lambd * grad_output, None
+
+
+class GradientReversal(nn.Module):
+    def __init__(self, lambd: float = 1.0):
+        super().__init__()
+        self.lambd = lambd
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return GradientReversalFunction.apply(x, self.lambd)
+
 class SimpleECGCNNMultiTask(nn.Module):
     def __init__(
         self,
@@ -831,6 +1029,9 @@ class SimpleECGCNNMultiTask(nn.Module):
         use_meta_features: bool,
         meta_feature_dim: int,
         use_aux_head: bool,
+        num_base_classes: int,
+        use_domain_adversarial: bool,
+        grl_lambda: float,
     ):
         super().__init__()
 
@@ -839,20 +1040,34 @@ class SimpleECGCNNMultiTask(nn.Module):
         padding = kernel_size // 2
 
         for out_ch in cnn_channels:
-            layers.extend([
-                nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=padding, bias=False),
-                nn.BatchNorm1d(out_ch),
-                nn.ReLU(inplace=True),
-                nn.MaxPool1d(kernel_size=pool_size),
-                nn.Dropout(dropout_rate),
-            ])
+            if USE_RESIDUAL_BLOCKS:
+                layers.extend([
+                    nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=padding, bias=False),
+                    nn.BatchNorm1d(out_ch),
+                    nn.ReLU(inplace=True),
+                ])
+                for _ in range(N_RESIDUAL_PER_STAGE):
+                    layers.append(ResBlock1D(out_ch, kernel_size=kernel_size, dropout=dropout_rate))
+                layers.extend([
+                    nn.MaxPool1d(kernel_size=pool_size),
+                    nn.Dropout(dropout_rate),
+                ])
+            else:
+                layers.extend([
+                    nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=padding, bias=False),
+                    nn.BatchNorm1d(out_ch),
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool1d(kernel_size=pool_size),
+                    nn.Dropout(dropout_rate),
+                ])
             in_ch = out_ch
 
         self.feature_extractor = nn.Sequential(*layers)
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.global_pool = TemporalAttentionPool(cnn_channels[-1]) if USE_ATTENTION_POOL else nn.AdaptiveAvgPool1d(1)
 
         self.use_meta_features = use_meta_features
         self.use_aux_head = use_aux_head
+        self.use_domain_adversarial = use_domain_adversarial
 
         feature_dim = cnn_channels[-1]
         if use_meta_features:
@@ -871,6 +1086,13 @@ class SimpleECGCNNMultiTask(nn.Module):
         else:
             self.aux_head = None
 
+        if use_domain_adversarial:
+            self.grl = GradientReversal(grl_lambda)
+            self.base_head = nn.Linear(fc_hidden_dim, num_base_classes)
+        else:
+            self.grl = None
+            self.base_head = None
+
     def extract_features_before_pool(self, x: torch.Tensor) -> torch.Tensor:
         """
         Retorna o mapa convolucional final antes do pooling.
@@ -883,8 +1105,9 @@ class SimpleECGCNNMultiTask(nn.Module):
         self,
         conv_features: torch.Tensor,
         meta: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        z = self.global_pool(conv_features).squeeze(-1)
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        pooled = self.global_pool(conv_features)
+        z = pooled.squeeze(-1) if pooled.dim() == 3 else pooled
 
         if self.use_meta_features:
             if meta is None:
@@ -894,9 +1117,10 @@ class SimpleECGCNNMultiTask(nn.Module):
         z = self.shared_fc(z)
         main_logits = self.main_head(z)
         aux_logits = self.aux_head(z) if self.aux_head is not None else None
-        return main_logits, aux_logits
+        base_logits = self.base_head(self.grl(z)) if self.base_head is not None and self.grl is not None else None
+        return main_logits, aux_logits, base_logits
 
-    def forward(self, x: torch.Tensor, meta: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def forward(self, x: torch.Tensor, meta: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         conv_features = self.extract_features_before_pool(x)
         return self.forward_from_conv_features(conv_features, meta)
 
@@ -972,6 +1196,107 @@ def compute_per_class_metrics(
     return pd.DataFrame(rows)
 
 
+def predict_with_model(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    use_temperature: bool = False,
+) -> Dict[str, np.ndarray]:
+    model.eval()
+    logits_list: List[np.ndarray] = []
+    y_list: List[np.ndarray] = []
+    with torch.no_grad():
+        for batch in loader:
+            x = batch["x"].to(device, non_blocking=True)
+            meta = batch["meta"].to(device, non_blocking=True)
+            y = batch["y_main"].cpu().numpy()
+            logits, _, _ = model(x, meta if USE_META_FEATURES else None)
+            if use_temperature and hasattr(model, "temperature_scaler") and model.temperature_scaler is not None:
+                logits = model.temperature_scaler(logits)
+            logits_list.append(logits.cpu().numpy())
+            y_list.append(y)
+    logits = np.concatenate(logits_list, axis=0)
+    y_true = np.concatenate(y_list, axis=0)
+    return {"logits": logits, "y_true": y_true, "prob": sigmoid_np(logits)}
+
+
+def find_optimal_thresholds(y_val_true: np.ndarray, y_val_prob: np.ndarray) -> Dict[str, float]:
+    thresholds = np.arange(0.05, 0.951, 0.01)
+    best: Dict[str, float] = {}
+    for i, cls in enumerate(MAIN_SUPERCLASS_LIST):
+        yt = y_val_true[:, i]
+        yp = y_val_prob[:, i]
+        scores = [f1_score(yt, (yp >= t).astype(int), zero_division=0) for t in thresholds]
+        best[cls] = float(thresholds[int(np.argmax(scores))])
+    return best
+
+
+def apply_thresholds(y_prob: np.ndarray, threshold_map: Dict[str, float]) -> np.ndarray:
+    preds = np.zeros_like(y_prob, dtype=int)
+    for i, cls in enumerate(MAIN_SUPERCLASS_LIST):
+        preds[:, i] = (y_prob[:, i] >= threshold_map.get(cls, THRESHOLD_MAIN)).astype(int)
+    return preds
+
+
+def compute_ece_multilabel(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> float:
+    eces = []
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    for i in range(y_true.shape[1]):
+        yt = y_true[:, i].astype(float)
+        pr = y_prob[:, i].astype(float)
+        ece = 0.0
+        for b in range(n_bins):
+            lo, hi = bins[b], bins[b + 1]
+            mask = (pr >= lo) & (pr <= hi) if b == n_bins - 1 else (pr >= lo) & (pr < hi)
+            if mask.sum() == 0:
+                continue
+            conf = float(pr[mask].mean())
+            acc = float(yt[mask].mean())
+            ece += (mask.sum() / len(pr)) * abs(acc - conf)
+        eces.append(ece)
+    return float(np.mean(eces)) if eces else float("nan")
+
+
+class TemperatureScaler(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.temperature = nn.Parameter(torch.ones(1) * 1.5)
+
+    def forward(self, logits: torch.Tensor) -> torch.Tensor:
+        return logits / torch.clamp(self.temperature, min=1e-3)
+
+
+def calibrate_temperature(model: nn.Module, val_loader: DataLoader, device: torch.device) -> float:
+    model.eval()
+    logits_list: List[torch.Tensor] = []
+    labels_list: List[torch.Tensor] = []
+    with torch.no_grad():
+        for batch in val_loader:
+            x = batch["x"].to(device, non_blocking=True)
+            meta = batch["meta"].to(device, non_blocking=True)
+            y = batch["y_main"].to(device, non_blocking=True)
+            logits, _, _ = model(x, meta if USE_META_FEATURES else None)
+            logits_list.append(logits.detach())
+            labels_list.append(y.detach())
+
+    all_logits = torch.cat(logits_list, dim=0)
+    all_labels = torch.cat(labels_list, dim=0)
+
+    scaler = TemperatureScaler().to(device)
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.LBFGS(scaler.parameters(), lr=0.1, max_iter=50)
+
+    def closure() -> torch.Tensor:
+        optimizer.zero_grad(set_to_none=True)
+        loss = criterion(scaler(all_logits), all_labels)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    model.temperature_scaler = scaler
+    return float(torch.clamp(scaler.temperature.detach().cpu(), min=1e-3).item())
+
+
 # =============================================================================
 # Treino / avaliação
 # =============================================================================
@@ -992,7 +1317,7 @@ def calculate_pos_weight(df: pd.DataFrame, cols: Sequence[str], class_names: Seq
     return torch.tensor(pos_weight, dtype=torch.float32)
 
 
-def build_criteria(train_df: pd.DataFrame, device: torch.device) -> Tuple[nn.Module, Optional[nn.Module]]:
+def build_criteria(train_df: pd.DataFrame, device: torch.device) -> Tuple[nn.Module, Optional[nn.Module], Optional[nn.Module]]:
     main_cols = [f"main_{sc}" for sc in MAIN_SUPERCLASS_LIST]
     aux_cols = [f"aux_{ac}" for ac in AUX_CLASS_LIST]
 
@@ -1010,7 +1335,8 @@ def build_criteria(train_df: pd.DataFrame, device: torch.device) -> Tuple[nn.Mod
         else:
             aux_criterion = nn.BCEWithLogitsLoss()
 
-    return main_criterion, aux_criterion
+    base_criterion = nn.CrossEntropyLoss() if USE_DOMAIN_ADVERSARIAL else None
+    return main_criterion, aux_criterion, base_criterion
 
 
 def run_epoch(
@@ -1018,8 +1344,10 @@ def run_epoch(
     loader: DataLoader,
     main_criterion: nn.Module,
     aux_criterion: Optional[nn.Module],
+    base_criterion: Optional[nn.Module],
     device: torch.device,
     optimizer: Optional[torch.optim.Optimizer] = None,
+    aux_loss_weight: Optional[float] = None,
 ) -> Dict[str, Any]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -1027,6 +1355,8 @@ def run_epoch(
     total_loss = 0.0
     total_main_loss = 0.0
     total_aux_loss = 0.0
+    total_base_loss = 0.0
+    total_base_correct = 0
     total_n = 0
 
     all_main_logits: List[np.ndarray] = []
@@ -1042,21 +1372,28 @@ def run_epoch(
         meta = batch["meta"].to(device, non_blocking=True)
         y_main = batch["y_main"].to(device, non_blocking=True)
         y_aux = batch["y_aux"].to(device, non_blocking=True)
+        y_base = batch["y_base"].to(device, non_blocking=True)
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(is_train):
-            main_logits, aux_logits = model(x, meta if USE_META_FEATURES else None)
+            main_logits, aux_logits, base_logits = model(x, meta if USE_META_FEATURES else None)
 
             main_loss = main_criterion(main_logits, y_main)
             aux_loss = torch.tensor(0.0, device=device)
+            base_loss = torch.tensor(0.0, device=device)
 
             if USE_AUX_HEAD and aux_logits is not None and aux_criterion is not None:
                 aux_loss = aux_criterion(aux_logits, y_aux)
-                loss = main_loss + AUX_LOSS_WEIGHT * aux_loss
+                cur_aux_weight = AUX_LOSS_WEIGHT if aux_loss_weight is None else aux_loss_weight
+                loss = main_loss + cur_aux_weight * aux_loss
             else:
                 loss = main_loss
+
+            if USE_DOMAIN_ADVERSARIAL and base_logits is not None and base_criterion is not None:
+                base_loss = base_criterion(base_logits, y_base)
+                loss = loss + DOMAIN_LOSS_WEIGHT * base_loss
 
             if is_train:
                 loss.backward()
@@ -1066,6 +1403,9 @@ def run_epoch(
         total_loss += float(loss.item()) * n
         total_main_loss += float(main_loss.item()) * n
         total_aux_loss += float(aux_loss.item()) * n
+        total_base_loss += float(base_loss.item()) * n
+        if USE_DOMAIN_ADVERSARIAL and base_logits is not None:
+            total_base_correct += int((base_logits.argmax(dim=1) == y_base).sum().item())
         total_n += n
 
         all_main_logits.append(main_logits.detach().cpu().numpy())
@@ -1082,6 +1422,8 @@ def run_epoch(
         "loss": total_loss / max(1, total_n),
         "main_loss": total_main_loss / max(1, total_n),
         "aux_loss": total_aux_loss / max(1, total_n),
+        "base_loss": total_base_loss / max(1, total_n),
+        "base_acc": float(total_base_correct / max(1, total_n)),
         "main_logits": np.concatenate(all_main_logits, axis=0),
         "y_main": np.concatenate(all_y_main, axis=0),
         "y_aux": np.concatenate(all_y_aux, axis=0),
@@ -1126,6 +1468,12 @@ def save_checkpoint(
             "POOL_SIZE": POOL_SIZE,
             "DROPOUT_RATE": DROPOUT_RATE,
             "FC_HIDDEN_DIM": FC_HIDDEN_DIM,
+            "USE_RESIDUAL_BLOCKS": USE_RESIDUAL_BLOCKS,
+            "N_RESIDUAL_PER_STAGE": N_RESIDUAL_PER_STAGE,
+            "USE_ATTENTION_POOL": USE_ATTENTION_POOL,
+            "USE_DOMAIN_ADVERSARIAL": USE_DOMAIN_ADVERSARIAL,
+            "DOMAIN_LOSS_WEIGHT": DOMAIN_LOSS_WEIGHT,
+            "GRL_LAMBDA": GRL_LAMBDA,
         }
     }, path)
 
@@ -1165,19 +1513,36 @@ def train_model(
         use_meta_features=USE_META_FEATURES,
         meta_feature_dim=META_FEATURE_DIM,
         use_aux_head=USE_AUX_HEAD,
+        num_base_classes=int(df["base_idx"].nunique()),
+        use_domain_adversarial=USE_DOMAIN_ADVERSARIAL,
+        grl_lambda=GRL_LAMBDA,
     ).to(device)
 
-    main_criterion, aux_criterion = build_criteria(train_df, device)
+    main_criterion, aux_criterion, base_criterion = build_criteria(train_df, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     scheduler = None
+    warmup_scheduler = None
+    cosine_scheduler = None
     if LR_SCHEDULER:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=LR_FACTOR,
-            patience=LR_PATIENCE,
-        )
+        if LR_SCHEDULER_TYPE == "plateau":
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=LR_FACTOR,
+                patience=LR_PATIENCE,
+            )
+        else:
+            warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                lr_lambda=lambda ep: (0.1 + 0.9 * ((ep + 1) / max(1, WARMUP_EPOCHS))),
+            )
+            cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=COSINE_T0,
+                T_mult=COSINE_T_MULT,
+                eta_min=COSINE_ETA_MIN,
+            )
 
     history: List[Dict[str, Any]] = []
     best_val_loss = float("inf")
@@ -1187,13 +1552,20 @@ def train_model(
     print("\nIniciando treinamento.")
     print(f"Device: {device}")
     print(f"DATA_LOADING_MODE: {DATA_LOADING_MODE}")
+    print(f"LR scheduler: {'habilitado' if LR_SCHEDULER else 'desabilitado'} | tipo={LR_SCHEDULER_TYPE}")
     print(f"Parâmetros treináveis: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
     for epoch in range(1, EPOCHS + 1):
         start = time.time()
 
-        train_out = run_epoch(model, train_loader, main_criterion, aux_criterion, device, optimizer)
-        val_out = run_epoch(model, val_loader, main_criterion, aux_criterion, device, optimizer=None)
+        if AUX_LOSS_DECAY:
+            progress = (epoch - 1) / max(1, EPOCHS - 1)
+            aux_weight = AUX_LOSS_WEIGHT + progress * (AUX_LOSS_WEIGHT_FINAL - AUX_LOSS_WEIGHT)
+        else:
+            aux_weight = AUX_LOSS_WEIGHT
+
+        train_out = run_epoch(model, train_loader, main_criterion, aux_criterion, base_criterion, device, optimizer, aux_loss_weight=aux_weight)
+        val_out = run_epoch(model, val_loader, main_criterion, aux_criterion, base_criterion, device, optimizer=None)
 
         train_main_prob = sigmoid_np(train_out["main_logits"])
         train_main_metrics = compute_metrics(train_out["y_main"], train_main_prob, threshold=THRESHOLD_MAIN)
@@ -1209,8 +1581,14 @@ def train_model(
             train_aux_metrics = compute_metrics(train_out["y_aux"], train_aux_prob, threshold=THRESHOLD_AUX)
             val_aux_metrics = compute_metrics(val_out["y_aux"], val_aux_prob, threshold=THRESHOLD_AUX)
 
-        if scheduler is not None:
-            scheduler.step(val_out["loss"])
+        if LR_SCHEDULER:
+            if LR_SCHEDULER_TYPE == "plateau" and scheduler is not None:
+                scheduler.step(val_out["loss"])
+            else:
+                if epoch <= WARMUP_EPOCHS and warmup_scheduler is not None:
+                    warmup_scheduler.step()
+                elif cosine_scheduler is not None:
+                    cosine_scheduler.step()
 
         lr = optimizer.param_groups[0]["lr"]
         elapsed = time.time() - start
@@ -1221,9 +1599,13 @@ def train_model(
             "train_loss_total": train_out["loss"],
             "train_loss_main": train_out["main_loss"],
             "train_loss_aux": train_out["aux_loss"],
+            "train_loss_base": train_out["base_loss"],
+            "train_base_acc": train_out["base_acc"],
             "val_loss_total": val_out["loss"],
             "val_loss_main": val_out["main_loss"],
             "val_loss_aux": val_out["aux_loss"],
+            "val_loss_base": val_out["base_loss"],
+            "val_base_acc": val_out["base_acc"],
             "train_main_f1_macro": train_main_metrics["f1_macro"],
             "train_main_f1_micro": train_main_metrics["f1_micro"],
             "val_main_f1_macro": val_main_metrics["f1_macro"],
@@ -1247,9 +1629,9 @@ def train_model(
             f"Epoch {epoch:03d}/{EPOCHS} | "
             f"lr={lr:.2e} | "
             f"train_loss={train_out['loss']:.5f} "
-            f"(main={train_out['main_loss']:.5f}, aux={train_out['aux_loss']:.5f}) | "
+            f"(main={train_out['main_loss']:.5f}, aux={train_out['aux_loss']:.5f}, base={train_out['base_loss']:.5f}) | "
             f"val_loss={val_out['loss']:.5f} "
-            f"(main={val_out['main_loss']:.5f}, aux={val_out['aux_loss']:.5f}) | "
+            f"(main={val_out['main_loss']:.5f}, aux={val_out['aux_loss']:.5f}, base={val_out['base_loss']:.5f}) | "
             f"val_main_f1_macro={val_main_metrics['f1_macro']:.4f} | "
             f"val_main_f1_micro={val_main_metrics['f1_micro']:.4f} | "
             f"time={elapsed:.1f}s"
@@ -1300,22 +1682,60 @@ def evaluate_test(
     results_dir: Path,
     device: torch.device,
 ) -> None:
+    val_df = df[df["split"] == "val"].reset_index(drop=True)
     test_df = df[df["split"] == "test"].reset_index(drop=True)
+    val_loader = make_loader(val_df, "val", shuffle=False, device=device)
     test_loader = make_loader(test_df, "test", shuffle=False, device=device)
+
+    baseline_out = predict_with_model(model, test_loader, device=device, use_temperature=False)
+    baseline_prob = baseline_out["prob"]
+    baseline_metrics = compute_per_class_metrics(baseline_out["y_true"], baseline_prob, MAIN_SUPERCLASS_LIST, THRESHOLD_MAIN)
 
     main_criterion = nn.BCEWithLogitsLoss()
     aux_criterion = nn.BCEWithLogitsLoss() if USE_AUX_HEAD else None
+    base_criterion = nn.CrossEntropyLoss() if USE_DOMAIN_ADVERSARIAL else None
 
-    test_out = run_epoch(model, test_loader, main_criterion, aux_criterion, device, optimizer=None)
+    test_out = run_epoch(model, test_loader, main_criterion, aux_criterion, base_criterion, device, optimizer=None)
 
-    main_prob = sigmoid_np(test_out["main_logits"])
-    main_pred = (main_prob >= THRESHOLD_MAIN).astype(int)
+    if USE_TEMPERATURE_SCALING:
+        t_value = calibrate_temperature(model, val_loader, device)
+        print(f"[MELHORIA] Temperature scaling habilitado (T = {t_value:.3f})")
+    else:
+        t_value = 1.0
+
+    main_logits_eval = test_out["main_logits"]
+    if USE_TEMPERATURE_SCALING and hasattr(model, "temperature_scaler"):
+        with torch.no_grad():
+            logits_t = torch.from_numpy(main_logits_eval).to(device)
+            main_logits_eval = model.temperature_scaler(logits_t).cpu().numpy()
+    main_prob = sigmoid_np(main_logits_eval)
+
+    threshold_map = {cls: THRESHOLD_MAIN for cls in MAIN_SUPERCLASS_LIST}
+    if USE_OPTIMAL_THRESHOLDS:
+        val_pred = predict_with_model(model, val_loader, device=device, use_temperature=USE_TEMPERATURE_SCALING)
+        threshold_map = find_optimal_thresholds(val_pred["y_true"], val_pred["prob"])
+        print("[MELHORIA] Thresholds otimizados: " + ", ".join([f"{k}={v:.2f}" for k, v in threshold_map.items()]))
+        (results_dir / "optimal_thresholds.json").write_text(
+            json.dumps(threshold_map, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    main_pred = apply_thresholds(main_prob, threshold_map)
 
     main_metrics = compute_metrics(test_out["y_main"], main_prob, threshold=THRESHOLD_MAIN)
+    main_metrics["subset_accuracy"] = float(accuracy_score(test_out["y_main"], main_pred))
+    main_metrics["f1_micro"] = float(f1_score(test_out["y_main"], main_pred, average="micro", zero_division=0))
+    main_metrics["f1_macro"] = float(f1_score(test_out["y_main"], main_pred, average="macro", zero_division=0))
+    main_metrics["precision_micro"] = float(precision_score(test_out["y_main"], main_pred, average="micro", zero_division=0))
+    main_metrics["precision_macro"] = float(precision_score(test_out["y_main"], main_pred, average="macro", zero_division=0))
+    main_metrics["recall_micro"] = float(recall_score(test_out["y_main"], main_pred, average="micro", zero_division=0))
+    main_metrics["recall_macro"] = float(recall_score(test_out["y_main"], main_pred, average="macro", zero_division=0))
     main_metrics["test_loss_total"] = float(test_out["loss"])
     main_metrics["test_loss_main"] = float(test_out["main_loss"])
     main_metrics["test_loss_aux"] = float(test_out["aux_loss"])
     main_metrics["threshold_main"] = float(THRESHOLD_MAIN)
+    main_metrics["ece_before"] = compute_ece_multilabel(test_out["y_main"], baseline_prob)
+    main_metrics["ece_after"] = compute_ece_multilabel(test_out["y_main"], main_prob)
+    main_metrics["temperature"] = float(t_value)
     main_metrics["n_test"] = int(len(test_out["y_main"]))
 
     aux_metrics = {}
@@ -1332,6 +1752,13 @@ def evaluate_test(
     pd.DataFrame([summary]).to_csv(results_dir / "test_metrics_summary.csv", index=False, encoding="utf-8-sig")
 
     per_class_main = compute_per_class_metrics(test_out["y_main"], main_prob, MAIN_SUPERCLASS_LIST, THRESHOLD_MAIN)
+    for i, cls in enumerate(MAIN_SUPERCLASS_LIST):
+        per_class_main.loc[per_class_main["class"] == cls, "threshold"] = threshold_map.get(cls, THRESHOLD_MAIN)
+        per_class_main.loc[per_class_main["class"] == cls, "f1_thresholded"] = f1_score(
+            test_out["y_main"][:, i],
+            main_pred[:, i],
+            zero_division=0
+        )
     per_class_main.to_csv(results_dir / "test_per_class_metrics.csv", index=False, encoding="utf-8-sig")
 
     if aux_prob is not None:
@@ -1359,6 +1786,33 @@ def evaluate_test(
 
         pd.DataFrame(rows).to_csv(results_dir / "test_predictions.csv", index=False, encoding="utf-8-sig")
 
+    calibration_payload = {
+        "temperature": float(t_value),
+        "ece_before": float(main_metrics["ece_before"]),
+        "ece_after": float(main_metrics["ece_after"]),
+    }
+    (results_dir / "calibration_temperature.json").write_text(
+        json.dumps(calibration_payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    baseline_metrics = baseline_metrics.rename(columns={
+        "precision": "precision_baseline",
+        "recall": "recall_baseline",
+        "f1": "f1_baseline",
+        "auroc": "auroc_baseline",
+        "auprc": "auprc_baseline",
+    })
+    improved_metrics = per_class_main.rename(columns={
+        "precision": "precision_improved",
+        "recall": "recall_improved",
+        "f1": "f1_improved",
+        "auroc": "auroc_improved",
+        "auprc": "auprc_improved",
+    })
+    comp = baseline_metrics.merge(improved_metrics, on=["class"], how="outer")
+    comp.to_csv(results_dir / "metrics_comparison.csv", index=False, encoding="utf-8-sig")
+
     print("\nTeste - cabeça principal:")
     for k, v in main_metrics.items():
         print(f"  {k}: {v}")
@@ -1372,6 +1826,18 @@ def evaluate_test(
     print(per_class_main)
 
     plot_results(results_dir, test_out["y_main"], main_prob, MAIN_SUPERCLASS_LIST, THRESHOLD_MAIN, "main")
+    plot_calibration(
+        y_true=test_out["y_main"],
+        y_prob=baseline_prob,
+        class_names=MAIN_SUPERCLASS_LIST,
+        output_path=results_dir / "plots" / "calibration_before_temperature.png",
+    )
+    plot_calibration(
+        y_true=test_out["y_main"],
+        y_prob=main_prob,
+        class_names=MAIN_SUPERCLASS_LIST,
+        output_path=results_dir / "plots" / "calibration_after_temperature.png",
+    )
 
     run_advanced_evaluation_outputs(
         model=model,
@@ -1380,6 +1846,20 @@ def evaluate_test(
         y_prob=main_prob,
         results_dir=results_dir,
         device=device,
+    )
+
+    build_metrics_json(
+        y_true=test_out["y_main"],
+        y_prob=main_prob,
+        class_names=MAIN_SUPERCLASS_LIST,
+        threshold=THRESHOLD_MAIN,
+        output_path=results_dir / "metrics_improved.json",
+        extra={
+            "thresholds": threshold_map,
+            "temperature": t_value,
+            "ece_before": main_metrics["ece_before"],
+            "ece_after": main_metrics["ece_after"],
+        },
     )
 
 
@@ -1747,7 +2227,7 @@ def compute_gradcam_1d(
     conv_features = model.extract_features_before_pool(x)
     conv_features.retain_grad()
 
-    main_logits, _ = model.forward_from_conv_features(conv_features, meta if USE_META_FEATURES else None)
+    main_logits, _, _ = model.forward_from_conv_features(conv_features, meta if USE_META_FEATURES else None)
     score = main_logits[0, target_class_idx]
 
     model.zero_grad(set_to_none=True)
@@ -1943,21 +2423,21 @@ def evaluate_metadata_influence(
             all_y.append(y)
             all_exam_ids.extend(batch["exam_id"])
 
-            logits_real, _ = model(x, meta)
+            logits_real, _, _ = model(x, meta)
             all_real.append(torch.sigmoid(logits_real).cpu().numpy())
 
             meta_zero = torch.full_like(meta, float(METADATA_BASELINE_VALUE))
-            logits_zero, _ = model(x, meta_zero)
+            logits_zero, _, _ = model(x, meta_zero)
             all_zero.append(torch.sigmoid(logits_zero).cpu().numpy())
 
             meta_age_zero = meta.clone()
             meta_age_zero[:, 0] = float(METADATA_BASELINE_VALUE)
-            logits_age_zero, _ = model(x, meta_age_zero)
+            logits_age_zero, _, _ = model(x, meta_age_zero)
             all_age_zero.append(torch.sigmoid(logits_age_zero).cpu().numpy())
 
             meta_sex_zero = meta.clone()
             meta_sex_zero[:, 1:] = float(METADATA_BASELINE_VALUE)
-            logits_sex_zero, _ = model(x, meta_sex_zero)
+            logits_sex_zero, _, _ = model(x, meta_sex_zero)
             all_sex_zero.append(torch.sigmoid(logits_sex_zero).cpu().numpy())
 
     prob_real = np.concatenate(all_real, axis=0)
@@ -2147,6 +2627,15 @@ def main() -> None:
     device = get_device()
 
     df = load_and_prepare_metadata(output_dir, results_dir)
+
+    if USE_AUGMENTATION:
+        print(f"[MELHORIA] Augmentação de ECG habilitada (p={AUG_PROBABILITY}, lead_dropout={AUG_LEAD_DROPOUT_PROB})")
+    if USE_RESIDUAL_BLOCKS:
+        print(f"[MELHORIA] Blocos residuais habilitados (N_RESIDUAL_PER_STAGE={N_RESIDUAL_PER_STAGE})")
+    if USE_ATTENTION_POOL:
+        print("[MELHORIA] Pooling com atenção temporal habilitado")
+    if USE_DOMAIN_ADVERSARIAL:
+        print(f"[MELHORIA] DANN habilitado (DOMAIN_LOSS_WEIGHT={DOMAIN_LOSS_WEIGHT}, GRL_LAMBDA={GRL_LAMBDA})")
 
     model, history = train_model(df, results_dir, device)
     plot_history(results_dir, history)
