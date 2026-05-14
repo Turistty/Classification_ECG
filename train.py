@@ -33,24 +33,15 @@ Entrada esperada do preprocessamento:
 Saídas:
   RESULTS_DIR/
     best_model.pt
-    last_model.pt
     config.json
-    split_metadata.csv
-    filtered_distribution_by_base.csv
-    train_history.csv
-    test_metrics_summary.csv
-    test_per_class_metrics.csv
-    test_predictions.csv
+    metrics.json
     plots/
       loss_curve.png
       f1_curve.png
-      multilabel_confusion_matrices.png
+      gradcam/*.png
+    reports/
+      global/ e uma pasta por base de teste
 
-Dependências:
-  pip install numpy pandas torch scikit-learn matplotlib tqdm
-
-Uso:
-  python train_simple_cnn_ecg_base_split_aux.py
 """
 
 from __future__ import annotations
@@ -72,177 +63,21 @@ from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
     f1_score,
-    multilabel_confusion_matrix,
     precision_score,
     recall_score,
     roc_auc_score,
-    roc_curve,
-    precision_recall_curve,
-    brier_score_loss,
 )
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-
-# =============================================================================
-# Variáveis globais
-# =============================================================================
-
-# ── Paths ──────────────────────────────────────────────────────────────────
-OUTPUT_DIR   = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Dados_Processados"
-RESULTS_DIR  = r"C:\Users\bruno\OneDrive\Desktop\Classification_ECG\Resultados_CNN_BaseSplit_Aux"
-
-# ── Split por base ─────────────────────────────────────────────────────────
-# Use exatamente os nomes que aparecem em metadata.csv/source_base.
-# Pelo seu relatório, os nomes são:
-#   "Chapman-Shaoxing-Ningbo"
-#   "cpsc_2018"
-#   "cpsc_2018_extra"
-#   "georgia"
-#   "ptb"
-#   "ptb-xl"
-#
-# Exemplo conservador de generalização cross-base:
-#   treino: Chapman + CPSC + Georgia
-#   validação: ptb-xl
-#   teste: ptb
-#
-# Ajuste conforme o experimento desejado.
-TRAIN_BASES = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
-VAL_BASES   = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
-TEST_BASES  = ["ptb-xl", "ptb", "cpsc_2018", "cpsc_2018_extra", "georgia","Chapman-Shaoxing-Ningbo"]
-
-
-# Se True, impede que a mesma base apareça em mais de um split.
-# Se False, permite usar a mesma base em train/val/test.
-# Quando a mesma base aparece em mais de um split, o script faz split interno aleatório
-# dentro dessa base, respeitando TRAIN_RATIO/VAL_RATIO/TEST_RATIO.
-STRICT_BASE_SPLIT = False
-
-# Razões usadas apenas para bases que aparecem em mais de um split.
-# Exemplo:
-#   TRAIN_BASES = ["ptb-xl"]
-#   VAL_BASES   = ["ptb-xl"]
-#   TEST_BASES  = ["ptb-xl"]
-# então ptb-xl será dividida internamente em 70/15/15.
-TRAIN_RATIO = 0.60
-VAL_RATIO   = 0.20
-TEST_RATIO  = 0.20
-SPLIT_SEED  = 42
-
-# Se True, para bases compartilhadas entre splits, estratifica pelo primeiro label principal positivo.
-STRATIFY_INTERNAL_SPLIT = True
-
-# ── Dados ──────────────────────────────────────────────────────────────────
-MAIN_SUPERCLASS_LIST = ["CD", "HYP", "MI", "NORM", "STTC"]
-NUM_MAIN_CLASSES     = len(MAIN_SUPERCLASS_LIST)
-
-TARGET_LEADS    = 12
-TARGET_SAMPLES  = 5000          # 500 Hz × 10 s
-
-# ── Cabeça auxiliar: achados do ECG, não saída diagnóstica final ───────────
-USE_AUX_HEAD = True
-AUX_LOSS_WEIGHT = 0.30
-
-# IDs canônicos da cabeça auxiliar. São nomes internos do treino.
-AUX_CLASS_LIST = ["RHYTHM", "FORM", "PACE"]
-NUM_AUX_CLASSES = len(AUX_CLASS_LIST)
-
-# Mapeamento flexível: procura tanto em metadata["superclass_id"] quanto em
-# metadata["superclass"]. Isso evita depender do nome exato usado no Map.csv.
-AUX_CLASS_ALIASES = {
-    "RHYTHM": [
-        "RHYTHM", "RHYTHM_ARRHYTHMIA", "Rhythm/Arrhythmia",
-        "Rhythm", "Arrhythmia"
-    ],
-    "FORM": [
-        "FORM", "AXIS_FORM_VOLTAGE", "Axis/Form/Voltage Abnormality",
-        "Axis/Form", "Form", "Axis", "Voltage"
-    ],
-    "PACE": [
-        "PACE", "PACED", "Paced Rhythm/Device Pattern",
-        "Paced Rhythm", "Device Pattern", "Pacing"
-    ],
-}
-
-# Se True, exames sem nenhum label auxiliar continuam no treino com vetor auxiliar 0.
-# Se False, esses exames seriam removidos. Para multitask, geralmente manter True.
-KEEP_SAMPLES_WITHOUT_AUX_LABEL = True
-
-# ── Metadados clínicos como features extras ────────────────────────────────
-USE_META_FEATURES = False        # Se True, concatena age + sex ao vetor após CNN
-META_FEATURE_DIM  = 3           # age (1) + sex one-hot (2: Male/Female, Unknown=00)
-
-# ── Modo de carregamento ───────────────────────────────────────────────────
-# "lazy": carrega cada batch .npz sob demanda com cache LRU.
-# "ram" : carrega todos os exames filtrados do split na RAM antes do treino.
-DATA_LOADING_MODE = "ram"      # "lazy" ou "ram"
-RAM_DTYPE = "float32"           # "float32" recomendado. "float16" reduz RAM, pode perder precisão.
-NPZ_CACHE_SIZE = 4              # usado apenas no modo lazy
-
-# ── Exclusão de dados de baixa qualidade ──────────────────────────────────
-EXCLUDE_WARNINGS = ["nan_inf", "flatline"]   # [] para usar todos
-MIN_POSITIVE_MAIN_LABELS = 1                 # remove exames sem nenhuma classe principal
-
-# ── Treinamento ────────────────────────────────────────────────────────────
-BATCH_SIZE_TRAIN = 64
-EPOCHS           = 50
-LEARNING_RATE    = 1e-3
-WEIGHT_DECAY     = 1e-4
-EARLY_STOPPING_PATIENCE = 10
-LR_SCHEDULER     = True
-LR_FACTOR        = 0.5
-LR_PATIENCE      = 5
-
-# ── Balanceamento de classes ───────────────────────────────────────────────
-USE_MAIN_CLASS_WEIGHTS = True
-USE_AUX_CLASS_WEIGHTS  = True
-
-# ── Arquitetura CNN ────────────────────────────────────────────────────────
-CNN_CHANNELS   = [32, 64, 128]
-KERNEL_SIZE    = 7
-POOL_SIZE      = 2
-DROPOUT_RATE   = 0.3
-FC_HIDDEN_DIM  = 256
-
-# ── Avaliação ──────────────────────────────────────────────────────────────
-THRESHOLD_MAIN = 0.5
-THRESHOLD_AUX  = 0.5
-SAVE_PREDICTIONS = True
-
-# Plots/artefatos avançados solicitados
-GENERATE_ADVANCED_EVAL = True
-GENERATE_CALIBRATION_PLOT = True
-GENERATE_ROC_CURVES = True
-GENERATE_PR_CURVES = True
-GENERATE_MULTILABEL_CONFUSION = True
-GENERATE_GRADCAM = True
-GENERATE_METADATA_INFLUENCE = True
-
-# Grad-CAM: escolhe automaticamente exemplo true positive de maior confiança por classe.
-# Se não houver true positive para uma classe, usa o maior score previsto daquela classe.
-GRADCAM_NUM_EXAMPLES_PER_CLASS = 1
-GRADCAM_TARGET_LAYER_NAME = "feature_extractor"  # última Conv1d dentro do feature_extractor
-GRADCAM_SMOOTHING_WINDOW = 25
-
-# Influência dos metadados:
-# mede diferença nas probabilidades quando metadados reais são substituídos por zero.
-# Isso não é causalidade clínica; é uma análise de sensibilidade do modelo.
-METADATA_INFLUENCE_MAX_SAMPLES = None  # None = test inteiro
-METADATA_BASELINE_VALUE = 0.0
-
-# ── Reprodutibilidade ──────────────────────────────────────────────────────
-SEED = 42
-
-# ── Outros ─────────────────────────────────────────────────────────────────
-NUM_WORKERS = 0                 # Windows: 0 evita problemas com npz + multiprocessing.
-PIN_MEMORY = True
-AGE_NORMALIZATION_DIVISOR = 100.0
+from reports import build_metrics_json as build_metrics_json_report, generate_split_reports, plot_history_simple
+from train_config import *
 
 
 # =============================================================================
 # Setup
 # =============================================================================
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -329,18 +164,8 @@ def save_config(results_dir: Path) -> None:
         "THRESHOLD_MAIN": THRESHOLD_MAIN,
         "THRESHOLD_AUX": THRESHOLD_AUX,
         "SEED": SEED,
-        "GENERATE_ADVANCED_EVAL": GENERATE_ADVANCED_EVAL,
-        "GENERATE_CALIBRATION_PLOT": GENERATE_CALIBRATION_PLOT,
-        "GENERATE_ROC_CURVES": GENERATE_ROC_CURVES,
-        "GENERATE_PR_CURVES": GENERATE_PR_CURVES,
-        "GENERATE_MULTILABEL_CONFUSION": GENERATE_MULTILABEL_CONFUSION,
-        "GENERATE_GRADCAM": GENERATE_GRADCAM,
-        "GENERATE_METADATA_INFLUENCE": GENERATE_METADATA_INFLUENCE,
         "GRADCAM_NUM_EXAMPLES_PER_CLASS": GRADCAM_NUM_EXAMPLES_PER_CLASS,
-        "GRADCAM_TARGET_LAYER_NAME": GRADCAM_TARGET_LAYER_NAME,
         "GRADCAM_SMOOTHING_WINDOW": GRADCAM_SMOOTHING_WINDOW,
-        "METADATA_INFLUENCE_MAX_SAMPLES": METADATA_INFLUENCE_MAX_SAMPLES,
-        "METADATA_BASELINE_VALUE": METADATA_BASELINE_VALUE,
     }
     (results_dir / "config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -689,8 +514,6 @@ def load_and_prepare_metadata(output_dir: Path, results_dir: Path) -> pd.DataFra
             row[f"aux_{ac}"] = int(sub[f"aux_{ac}"].sum())
         dist_rows.append(row)
 
-    pd.DataFrame(dist_rows).to_csv(results_dir / "filtered_distribution_by_base.csv", index=False, encoding="utf-8-sig")
-    df.to_csv(results_dir / "split_metadata.csv", index=False, encoding="utf-8-sig")
 
     # Checagem mínima.
     for split in ["train", "val", "test"]:
@@ -1272,21 +1095,9 @@ def train_model(
         else:
             epochs_without_improvement += 1
 
-        pd.DataFrame(history).to_csv(results_dir / "train_history.csv", index=False, encoding="utf-8-sig")
-
         if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
             print(f"Early stopping na época {epoch}. Melhor época: {best_epoch}.")
             break
-
-    save_checkpoint(
-        results_dir / "last_model.pt",
-        model,
-        optimizer,
-        epoch,
-        val_out["loss"],
-        val_main_metrics,
-        val_aux_metrics,
-    )
 
     ckpt = torch.load(results_dir / "best_model.pt", map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
@@ -1327,38 +1138,7 @@ def evaluate_test(
         aux_metrics = compute_metrics(test_out["y_aux"], aux_prob, threshold=THRESHOLD_AUX)
         aux_metrics = {f"aux_{k}": v for k, v in aux_metrics.items()}
 
-    summary = dict(main_metrics)
-    summary.update(aux_metrics)
-    pd.DataFrame([summary]).to_csv(results_dir / "test_metrics_summary.csv", index=False, encoding="utf-8-sig")
-
     per_class_main = compute_per_class_metrics(test_out["y_main"], main_prob, MAIN_SUPERCLASS_LIST, THRESHOLD_MAIN)
-    per_class_main.to_csv(results_dir / "test_per_class_metrics.csv", index=False, encoding="utf-8-sig")
-
-    if aux_prob is not None:
-        per_class_aux = compute_per_class_metrics(test_out["y_aux"], aux_prob, AUX_CLASS_LIST, THRESHOLD_AUX)
-        per_class_aux.to_csv(results_dir / "test_aux_per_class_metrics.csv", index=False, encoding="utf-8-sig")
-
-    if SAVE_PREDICTIONS:
-        rows = []
-        exam_ids = test_out["exam_ids"]
-        for i, exam_id in enumerate(exam_ids):
-            row = {"exam_id": exam_id}
-
-            for c, sc in enumerate(MAIN_SUPERCLASS_LIST):
-                row[f"true_main_{sc}"] = int(test_out["y_main"][i, c])
-                row[f"prob_main_{sc}"] = float(main_prob[i, c])
-                row[f"pred_main_{sc}"] = int(main_pred[i, c])
-
-            if aux_prob is not None and aux_pred is not None:
-                for c, ac in enumerate(AUX_CLASS_LIST):
-                    row[f"true_aux_{ac}"] = int(test_out["y_aux"][i, c])
-                    row[f"prob_aux_{ac}"] = float(aux_prob[i, c])
-                    row[f"pred_aux_{ac}"] = int(aux_pred[i, c])
-
-            rows.append(row)
-
-        pd.DataFrame(rows).to_csv(results_dir / "test_predictions.csv", index=False, encoding="utf-8-sig")
-
     print("\nTeste - cabeça principal:")
     for k, v in main_metrics.items():
         print(f"  {k}: {v}")
@@ -1371,13 +1151,34 @@ def evaluate_test(
     print("\nMétricas por classe principal:")
     print(per_class_main)
 
-    plot_results(results_dir, test_out["y_main"], main_prob, MAIN_SUPERCLASS_LIST, THRESHOLD_MAIN, "main")
+    build_metrics_json_report(
+        y_true=test_out["y_main"],
+        y_prob=main_prob,
+        class_names=MAIN_SUPERCLASS_LIST,
+        threshold=THRESHOLD_MAIN,
+        output_path=results_dir / "metrics.json",
+        extra={
+            "aux_head_enabled": bool(USE_AUX_HEAD),
+            "aux_loss_weight": float(AUX_LOSS_WEIGHT),
+            "aux_loss_influence_on_test": float((AUX_LOSS_WEIGHT * test_out["aux_loss"]) / max(test_out["loss"], 1e-12)) if USE_AUX_HEAD else 0.0,
+        },
+    )
 
-    run_advanced_evaluation_outputs(
+    generate_split_reports(
+        y_true=test_out["y_main"],
+        y_prob=main_prob,
+        test_bases=test_df["source_base"].astype(str).tolist(),
+        class_names=MAIN_SUPERCLASS_LIST,
+        threshold=THRESHOLD_MAIN,
+        output_root=results_dir / "reports",
+    )
+
+    generate_gradcam_examples(
         model=model,
         test_df=test_df,
         y_true=test_out["y_main"],
         y_prob=main_prob,
+        class_names=MAIN_SUPERCLASS_LIST,
         results_dir=results_dir,
         device=device,
     )
@@ -1386,332 +1187,6 @@ def evaluate_test(
 # =============================================================================
 # Plots
 # =============================================================================
-
-def plot_history(results_dir: Path, history: pd.DataFrame) -> None:
-    plots_dir = results_dir / "plots"
-    ensure_dir(plots_dir)
-
-    if history.empty:
-        return
-
-    fig = plt.figure(figsize=(9, 5))
-    plt.plot(history["epoch"], history["train_loss_total"], label="train_total")
-    plt.plot(history["epoch"], history["val_loss_total"], label="val_total")
-    plt.plot(history["epoch"], history["train_loss_main"], label="train_main")
-    plt.plot(history["epoch"], history["val_loss_main"], label="val_main")
-    if "val_loss_aux" in history.columns:
-        plt.plot(history["epoch"], history["val_loss_aux"], label="val_aux")
-    plt.xlabel("Época")
-    plt.ylabel("Loss")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    fig.savefig(plots_dir / "loss_curve.png", dpi=130)
-    plt.close(fig)
-
-    fig = plt.figure(figsize=(9, 5))
-    plt.plot(history["epoch"], history["train_main_f1_macro"], label="train_main_f1_macro")
-    plt.plot(history["epoch"], history["val_main_f1_macro"], label="val_main_f1_macro")
-    plt.plot(history["epoch"], history["val_main_f1_micro"], label="val_main_f1_micro")
-    if "val_aux_f1_macro" in history.columns:
-        plt.plot(history["epoch"], history["val_aux_f1_macro"], label="val_aux_f1_macro")
-    plt.xlabel("Época")
-    plt.ylabel("F1")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    fig.savefig(plots_dir / "f1_curve.png", dpi=130)
-    plt.close(fig)
-
-
-def plot_results(
-    results_dir: Path,
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    class_names: Sequence[str],
-    threshold: float,
-    prefix: str,
-) -> None:
-    plots_dir = results_dir / "plots"
-    ensure_dir(plots_dir)
-
-    y_pred = (y_prob >= threshold).astype(int)
-    mcm = multilabel_confusion_matrix(y_true, y_pred)
-
-    n_classes = len(class_names)
-    fig, axes = plt.subplots(1, n_classes, figsize=(4 * n_classes, 4))
-    if n_classes == 1:
-        axes = [axes]
-
-    for i, cls in enumerate(class_names):
-        ax = axes[i]
-        cm = mcm[i]
-        ax.imshow(cm)
-        ax.set_title(cls)
-        ax.set_xticks([0, 1])
-        ax.set_yticks([0, 1])
-        ax.set_xticklabels(["Pred 0", "Pred 1"])
-        ax.set_yticklabels(["True 0", "True 1"])
-
-        for r in range(2):
-            for c in range(2):
-                ax.text(c, r, str(cm[r, c]), ha="center", va="center")
-
-    fig.suptitle(f"Matrizes de confusão multi-label - {prefix}")
-    fig.tight_layout()
-    fig.savefig(plots_dir / f"{prefix}_multilabel_confusion_matrices.png", dpi=130)
-    plt.close(fig)
-
-
-# =============================================================================
-# Avaliação avançada, curvas, calibração, Grad-CAM e influência dos metadados
-# =============================================================================
-
-def _safe_auc(y_true_col: np.ndarray, y_prob_col: np.ndarray) -> float:
-    try:
-        if len(np.unique(y_true_col)) < 2:
-            return float("nan")
-        return float(roc_auc_score(y_true_col, y_prob_col))
-    except Exception:
-        return float("nan")
-
-
-def _safe_auprc(y_true_col: np.ndarray, y_prob_col: np.ndarray) -> float:
-    try:
-        if len(np.unique(y_true_col)) < 2:
-            return float("nan")
-        return float(average_precision_score(y_true_col, y_prob_col))
-    except Exception:
-        return float("nan")
-
-
-def build_metrics_json(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    class_names: Sequence[str],
-    threshold: float,
-    output_path: Path,
-    extra: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    y_pred = (y_prob >= threshold).astype(int)
-    global_metrics = compute_metrics(y_true, y_prob, threshold=threshold)
-
-    per_class: Dict[str, Dict[str, Any]] = {}
-    mcm = multilabel_confusion_matrix(y_true, y_pred)
-
-    for i, cls in enumerate(class_names):
-        tn, fp, fn, tp = mcm[i].ravel()
-        yt = y_true[:, i]
-        yp = y_pred[:, i]
-        prob = y_prob[:, i]
-
-        try:
-            brier = float(brier_score_loss(yt, prob)) if len(np.unique(yt)) > 1 else float("nan")
-        except Exception:
-            brier = float("nan")
-
-        per_class[cls] = {
-            "support": int(yt.sum()),
-            "predicted_positive": int(yp.sum()),
-            "tn": int(tn),
-            "fp": int(fp),
-            "fn": int(fn),
-            "tp": int(tp),
-            "precision": float(precision_score(yt, yp, zero_division=0)),
-            "recall": float(recall_score(yt, yp, zero_division=0)),
-            "specificity": float(tn / max(1, tn + fp)),
-            "f1": float(f1_score(yt, yp, zero_division=0)),
-            "auroc": _safe_auc(yt, prob),
-            "auprc": _safe_auprc(yt, prob),
-            "brier": brier,
-            "mean_probability_positive": float(prob[yt == 1].mean()) if np.any(yt == 1) else float("nan"),
-            "mean_probability_negative": float(prob[yt == 0].mean()) if np.any(yt == 0) else float("nan"),
-        }
-
-    payload = {
-        "threshold": float(threshold),
-        "n_samples": int(y_true.shape[0]),
-        "classes": list(class_names),
-        "global": global_metrics,
-        "per_class": per_class,
-    }
-    if extra:
-        payload["extra"] = extra
-
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    return payload
-
-
-def plot_roc_curves(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    class_names: Sequence[str],
-    output_path: Path,
-) -> None:
-    fig = plt.figure(figsize=(8, 7))
-
-    for i, cls in enumerate(class_names):
-        yt = y_true[:, i]
-        prob = y_prob[:, i]
-        if len(np.unique(yt)) < 2:
-            continue
-        fpr, tpr, _ = roc_curve(yt, prob)
-        auc = roc_auc_score(yt, prob)
-        plt.plot(fpr, tpr, label=f"{cls} AUC={auc:.3f}")
-
-    # micro-average
-    try:
-        fpr_micro, tpr_micro, _ = roc_curve(y_true.ravel(), y_prob.ravel())
-        auc_micro = roc_auc_score(y_true, y_prob, average="micro")
-        plt.plot(fpr_micro, tpr_micro, linestyle="--", label=f"micro AUC={auc_micro:.3f}")
-    except Exception:
-        pass
-
-    plt.plot([0, 1], [0, 1], linestyle=":", label="chance")
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("ROC curves - superclasses multilabel")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc="lower right", fontsize=8)
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=140)
-    plt.close(fig)
-
-
-def plot_pr_curves(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    class_names: Sequence[str],
-    output_path: Path,
-) -> None:
-    fig = plt.figure(figsize=(8, 7))
-
-    for i, cls in enumerate(class_names):
-        yt = y_true[:, i]
-        prob = y_prob[:, i]
-        if len(np.unique(yt)) < 2:
-            continue
-        precision, recall, _ = precision_recall_curve(yt, prob)
-        ap = average_precision_score(yt, prob)
-        plt.plot(recall, precision, label=f"{cls} AP={ap:.3f}")
-
-    try:
-        precision_micro, recall_micro, _ = precision_recall_curve(y_true.ravel(), y_prob.ravel())
-        ap_micro = average_precision_score(y_true, y_prob, average="micro")
-        plt.plot(recall_micro, precision_micro, linestyle="--", label=f"micro AP={ap_micro:.3f}")
-    except Exception:
-        pass
-
-    plt.xlabel("Recall")
-    plt.ylabel("Precision")
-    plt.title("Precision-Recall curves - superclasses multilabel")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc="lower left", fontsize=8)
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=140)
-    plt.close(fig)
-
-
-def plot_calibration(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    class_names: Sequence[str],
-    output_path: Path,
-    n_bins: int = 10,
-) -> pd.DataFrame:
-    rows: List[Dict[str, Any]] = []
-    fig = plt.figure(figsize=(8, 7))
-
-    bins = np.linspace(0.0, 1.0, n_bins + 1)
-
-    for i, cls in enumerate(class_names):
-        yt = y_true[:, i].astype(float)
-        prob = y_prob[:, i].astype(float)
-
-        bin_centers = []
-        frac_pos = []
-        mean_pred = []
-
-        for b in range(n_bins):
-            lo, hi = bins[b], bins[b + 1]
-            if b == n_bins - 1:
-                mask = (prob >= lo) & (prob <= hi)
-            else:
-                mask = (prob >= lo) & (prob < hi)
-
-            if mask.sum() == 0:
-                continue
-
-            mp = float(prob[mask].mean())
-            fp = float(yt[mask].mean())
-            center = float((lo + hi) / 2.0)
-
-            bin_centers.append(center)
-            mean_pred.append(mp)
-            frac_pos.append(fp)
-
-            rows.append({
-                "class": cls,
-                "bin": b,
-                "bin_low": lo,
-                "bin_high": hi,
-                "n": int(mask.sum()),
-                "mean_predicted_probability": mp,
-                "fraction_positive": fp,
-            })
-
-        if mean_pred:
-            plt.plot(mean_pred, frac_pos, marker="o", label=cls)
-
-    plt.plot([0, 1], [0, 1], linestyle=":", label="perfect calibration")
-    plt.xlabel("Probabilidade média prevista")
-    plt.ylabel("Fração observada positiva")
-    plt.title("Calibration plot - superclasses multilabel")
-    plt.grid(True, alpha=0.3)
-    plt.legend(fontsize=8)
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=140)
-    plt.close(fig)
-
-    df = pd.DataFrame(rows)
-    df.to_csv(output_path.with_suffix(".csv"), index=False, encoding="utf-8-sig")
-    return df
-
-
-def plot_multilabel_confusion_matrices(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    class_names: Sequence[str],
-    threshold: float,
-    output_path: Path,
-) -> None:
-    y_pred = (y_prob >= threshold).astype(int)
-    mcm = multilabel_confusion_matrix(y_true, y_pred)
-
-    n_classes = len(class_names)
-    fig, axes = plt.subplots(1, n_classes, figsize=(4 * n_classes, 4))
-    if n_classes == 1:
-        axes = [axes]
-
-    for i, cls in enumerate(class_names):
-        ax = axes[i]
-        cm = mcm[i]
-        ax.imshow(cm)
-        ax.set_title(cls)
-        ax.set_xticks([0, 1])
-        ax.set_yticks([0, 1])
-        ax.set_xticklabels(["Pred 0", "Pred 1"])
-        ax.set_yticklabels(["True 0", "True 1"])
-
-        for r in range(2):
-            for c in range(2):
-                ax.text(c, r, str(int(cm[r, c])), ha="center", va="center")
-
-    fig.suptitle("Matriz de confusão por superclasse - multilabel")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=140)
-    plt.close(fig)
-
 
 def get_sample_from_dataset(dataset: Dataset, index: int) -> Dict[str, Any]:
     item = dataset[index]
@@ -1842,14 +1317,9 @@ def generate_gradcam_examples(
         prob = y_prob[:, class_idx]
 
         tp_candidates = np.where((yt == 1) & (prob >= THRESHOLD_MAIN))[0]
-        if len(tp_candidates) > 0:
-            ordered = tp_candidates[np.argsort(prob[tp_candidates])[::-1]]
-            candidate_type = "high_confidence_true_positive"
-        else:
-            ordered = np.argsort(prob)[::-1]
-            candidate_type = "highest_probability_no_tp_available"
-
+        ordered = tp_candidates[np.argsort(prob[tp_candidates])[::-1]] if len(tp_candidates) > 0 else np.array([], dtype=int)
         selected = ordered[:GRADCAM_NUM_EXAMPLES_PER_CLASS]
+        candidate_type = "high_confidence_true_positive"
 
         for rank, sample_idx in enumerate(selected):
             item = get_sample_from_dataset(dataset, int(sample_idx))
@@ -1887,248 +1357,8 @@ def generate_gradcam_examples(
                 "plot_path": str(out_path),
             })
 
-    df = pd.DataFrame(rows)
-    df.to_csv(results_dir / "gradcam_examples.csv", index=False, encoding="utf-8-sig")
-    return df
+    return pd.DataFrame(rows)
 
-
-def evaluate_metadata_influence(
-    model: SimpleECGCNNMultiTask,
-    test_df: pd.DataFrame,
-    results_dir: Path,
-    device: torch.device,
-) -> Dict[str, Any]:
-    """
-    Avalia sensibilidade às features de metadados:
-      prob(real meta) - prob(meta zerado)
-
-    Também mede ablações individuais:
-      age=0 mantendo sex
-      sex=0 mantendo age
-
-    Isso ajuda a ver se o modelo está dependendo demais de idade/sexo.
-    """
-    if not USE_META_FEATURES:
-        payload = {"enabled": False, "reason": "USE_META_FEATURES=False"}
-        (results_dir / "metadata_influence.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        return payload
-
-    eval_df = test_df.reset_index(drop=True).copy()
-    if METADATA_INFLUENCE_MAX_SAMPLES is not None and len(eval_df) > METADATA_INFLUENCE_MAX_SAMPLES:
-        eval_df = eval_df.sample(n=METADATA_INFLUENCE_MAX_SAMPLES, random_state=SEED).reset_index(drop=True)
-
-    loader = DataLoader(
-        make_dataset(eval_df, split_name="metadata_influence"),
-        batch_size=BATCH_SIZE_TRAIN,
-        shuffle=False,
-        num_workers=NUM_WORKERS,
-        pin_memory=PIN_MEMORY and device.type == "cuda",
-        drop_last=False,
-    )
-
-    model.eval()
-
-    all_real: List[np.ndarray] = []
-    all_zero: List[np.ndarray] = []
-    all_age_zero: List[np.ndarray] = []
-    all_sex_zero: List[np.ndarray] = []
-    all_y: List[np.ndarray] = []
-    all_exam_ids: List[str] = []
-
-    with torch.no_grad():
-        for batch in tqdm(loader, desc="metadata influence", leave=False):
-            x = batch["x"].to(device, non_blocking=True)
-            meta = batch["meta"].to(device, non_blocking=True)
-            y = batch["y_main"].cpu().numpy()
-            all_y.append(y)
-            all_exam_ids.extend(batch["exam_id"])
-
-            logits_real, _ = model(x, meta)
-            all_real.append(torch.sigmoid(logits_real).cpu().numpy())
-
-            meta_zero = torch.full_like(meta, float(METADATA_BASELINE_VALUE))
-            logits_zero, _ = model(x, meta_zero)
-            all_zero.append(torch.sigmoid(logits_zero).cpu().numpy())
-
-            meta_age_zero = meta.clone()
-            meta_age_zero[:, 0] = float(METADATA_BASELINE_VALUE)
-            logits_age_zero, _ = model(x, meta_age_zero)
-            all_age_zero.append(torch.sigmoid(logits_age_zero).cpu().numpy())
-
-            meta_sex_zero = meta.clone()
-            meta_sex_zero[:, 1:] = float(METADATA_BASELINE_VALUE)
-            logits_sex_zero, _ = model(x, meta_sex_zero)
-            all_sex_zero.append(torch.sigmoid(logits_sex_zero).cpu().numpy())
-
-    prob_real = np.concatenate(all_real, axis=0)
-    prob_zero = np.concatenate(all_zero, axis=0)
-    prob_age_zero = np.concatenate(all_age_zero, axis=0)
-    prob_sex_zero = np.concatenate(all_sex_zero, axis=0)
-    y_true = np.concatenate(all_y, axis=0)
-
-    delta_all = prob_real - prob_zero
-    delta_age = prob_real - prob_age_zero
-    delta_sex = prob_real - prob_sex_zero
-
-    rows = []
-    summary: Dict[str, Any] = {
-        "enabled": True,
-        "n_samples": int(len(prob_real)),
-        "interpretation": "delta = probabilidade com metadados reais - probabilidade com metadados ablacionados/zerados",
-        "per_class": {},
-    }
-
-    for i, cls in enumerate(MAIN_SUPERCLASS_LIST):
-        for kind, delta in [
-            ("all_meta_zeroed", delta_all),
-            ("age_zeroed", delta_age),
-            ("sex_zeroed", delta_sex),
-        ]:
-            d = delta[:, i]
-            row = {
-                "class": cls,
-                "ablation": kind,
-                "mean_delta": float(np.mean(d)),
-                "mean_abs_delta": float(np.mean(np.abs(d))),
-                "median_abs_delta": float(np.median(np.abs(d))),
-                "p95_abs_delta": float(np.quantile(np.abs(d), 0.95)),
-                "max_abs_delta": float(np.max(np.abs(d))),
-            }
-            rows.append(row)
-
-            summary["per_class"].setdefault(cls, {})[kind] = row
-
-    details_rows = []
-    for r, exam_id in enumerate(all_exam_ids):
-        row = {"exam_id": exam_id}
-        for i, cls in enumerate(MAIN_SUPERCLASS_LIST):
-            row[f"true_{cls}"] = int(y_true[r, i])
-            row[f"prob_real_{cls}"] = float(prob_real[r, i])
-            row[f"prob_meta_zero_{cls}"] = float(prob_zero[r, i])
-            row[f"delta_meta_{cls}"] = float(delta_all[r, i])
-            row[f"delta_age_{cls}"] = float(delta_age[r, i])
-            row[f"delta_sex_{cls}"] = float(delta_sex[r, i])
-        details_rows.append(row)
-
-    summary_df = pd.DataFrame(rows)
-    details_df = pd.DataFrame(details_rows)
-
-    summary_df.to_csv(results_dir / "metadata_influence_summary.csv", index=False, encoding="utf-8-sig")
-    details_df.to_csv(results_dir / "metadata_influence_per_sample.csv", index=False, encoding="utf-8-sig")
-    (results_dir / "metadata_influence.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    plot_metadata_influence(summary_df, results_dir / "plots" / "metadata_influence.png")
-    return summary
-
-
-def plot_metadata_influence(summary_df: pd.DataFrame, output_path: Path) -> None:
-    ensure_dir(output_path.parent)
-
-    if summary_df.empty:
-        return
-
-    fig = plt.figure(figsize=(10, 6))
-
-    # Barras agrupadas simples por ablação.
-    classes = list(MAIN_SUPERCLASS_LIST)
-    ablations = ["all_meta_zeroed", "age_zeroed", "sex_zeroed"]
-    x = np.arange(len(classes))
-    width = 0.25
-
-    for j, abl in enumerate(ablations):
-        vals = []
-        for cls in classes:
-            sub = summary_df[(summary_df["class"] == cls) & (summary_df["ablation"] == abl)]
-            vals.append(float(sub["mean_abs_delta"].iloc[0]) if not sub.empty else 0.0)
-        plt.bar(x + (j - 1) * width, vals, width=width, label=abl)
-
-    plt.xticks(x, classes)
-    plt.ylabel("Mean absolute probability delta")
-    plt.title("Influência dos metadados por ablação")
-    plt.grid(True, axis="y", alpha=0.3)
-    plt.legend(fontsize=8)
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=140)
-    plt.close(fig)
-
-
-def run_advanced_evaluation_outputs(
-    model: SimpleECGCNNMultiTask,
-    test_df: pd.DataFrame,
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    results_dir: Path,
-    device: torch.device,
-) -> None:
-    plots_dir = results_dir / "plots"
-    ensure_dir(plots_dir)
-
-    if GENERATE_ADVANCED_EVAL:
-        build_metrics_json(
-            y_true=y_true,
-            y_prob=y_prob,
-            class_names=MAIN_SUPERCLASS_LIST,
-            threshold=THRESHOLD_MAIN,
-            output_path=results_dir / "metrics.json",
-            extra={
-                "main_task": True,
-                "auxiliary_head_used_for_training": bool(USE_AUX_HEAD),
-                "metadata_features_used": bool(USE_META_FEATURES),
-                "data_loading_mode": DATA_LOADING_MODE,
-            },
-        )
-
-    if GENERATE_ROC_CURVES:
-        plot_roc_curves(
-            y_true=y_true,
-            y_prob=y_prob,
-            class_names=MAIN_SUPERCLASS_LIST,
-            output_path=plots_dir / "roc_curves.png",
-        )
-
-    if GENERATE_PR_CURVES:
-        plot_pr_curves(
-            y_true=y_true,
-            y_prob=y_prob,
-            class_names=MAIN_SUPERCLASS_LIST,
-            output_path=plots_dir / "pr_curves.png",
-        )
-
-    if GENERATE_CALIBRATION_PLOT:
-        plot_calibration(
-            y_true=y_true,
-            y_prob=y_prob,
-            class_names=MAIN_SUPERCLASS_LIST,
-            output_path=plots_dir / "calibration.png",
-        )
-
-    if GENERATE_MULTILABEL_CONFUSION:
-        plot_multilabel_confusion_matrices(
-            y_true=y_true,
-            y_prob=y_prob,
-            class_names=MAIN_SUPERCLASS_LIST,
-            threshold=THRESHOLD_MAIN,
-            output_path=plots_dir / "multilabel_confusion_by_superclass.png",
-        )
-
-    if GENERATE_GRADCAM:
-        generate_gradcam_examples(
-            model=model,
-            test_df=test_df,
-            y_true=y_true,
-            y_prob=y_prob,
-            class_names=MAIN_SUPERCLASS_LIST,
-            results_dir=results_dir,
-            device=device,
-        )
-
-    if GENERATE_METADATA_INFLUENCE:
-        evaluate_metadata_influence(
-            model=model,
-            test_df=test_df,
-            results_dir=results_dir,
-            device=device,
-        )
 
 # =============================================================================
 # Main
@@ -2149,7 +1379,7 @@ def main() -> None:
     df = load_and_prepare_metadata(output_dir, results_dir)
 
     model, history = train_model(df, results_dir, device)
-    plot_history(results_dir, history)
+    plot_history_simple(results_dir, history)
 
     evaluate_test(model, df, results_dir, device)
 

@@ -1,0 +1,5 @@
+Precision alta → poucos falsos positivos.
+Recall alto → poucos falsos negativos.
+
+threshold baixo  → modelo marca muita coisa como positiva → recall sobe, precision pode cair
+threshold alto   → modelo marca pouca coisa como positiva → precision sobe, recall pode cair
