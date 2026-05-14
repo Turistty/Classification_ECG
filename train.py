@@ -70,7 +70,13 @@ from sklearn.metrics import (
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from reports import build_metrics_json as build_metrics_json_report, generate_split_reports, plot_history_simple
+from reports import (
+    build_metrics_json as build_metrics_json_report,
+    export_base_generalization_table,
+    generate_split_reports,
+    plot_history_simple,
+    save_calibration_plot,
+)
 from train_config import *
 
 
@@ -144,6 +150,15 @@ def save_config(results_dir: Path) -> None:
         "META_FEATURE_DIM": META_FEATURE_DIM,
         "DATA_LOADING_MODE": DATA_LOADING_MODE,
         "RAM_DTYPE": RAM_DTYPE,
+        "ENABLE_ECG_AUGMENTATION": ENABLE_ECG_AUGMENTATION,
+        "AUG_NOISE_PROB": AUG_NOISE_PROB,
+        "AUG_NOISE_STD": AUG_NOISE_STD,
+        "AUG_SCALE_PROB": AUG_SCALE_PROB,
+        "AUG_SCALE_MIN": AUG_SCALE_MIN,
+        "AUG_SCALE_MAX": AUG_SCALE_MAX,
+        "AUG_SHIFT_PROB": AUG_SHIFT_PROB,
+        "AUG_SHIFT_MAX": AUG_SHIFT_MAX,
+        "AUG_LEAD_INVERT_PROB": AUG_LEAD_INVERT_PROB,
         "EXCLUDE_WARNINGS": EXCLUDE_WARNINGS,
         "MIN_POSITIVE_MAIN_LABELS": MIN_POSITIVE_MAIN_LABELS,
         "BATCH_SIZE_TRAIN": BATCH_SIZE_TRAIN,
@@ -551,12 +566,28 @@ class NPZLRUCache:
         return x, exam_ids
 
 
+def augment_ecg(x: np.ndarray) -> np.ndarray:
+    x_aug = np.asarray(x, dtype=np.float32).copy()
+    if random.random() < AUG_NOISE_PROB:
+        x_aug = x_aug + np.random.normal(0, AUG_NOISE_STD, x_aug.shape).astype(np.float32)
+    if random.random() < AUG_SCALE_PROB:
+        x_aug = x_aug * float(np.random.uniform(AUG_SCALE_MIN, AUG_SCALE_MAX))
+    if random.random() < AUG_SHIFT_PROB:
+        shift = random.randint(-AUG_SHIFT_MAX, AUG_SHIFT_MAX)
+        x_aug = np.roll(x_aug, shift, axis=1)
+    if random.random() < AUG_LEAD_INVERT_PROB:
+        lead_idx = random.randint(0, 11)
+        x_aug[lead_idx] = -x_aug[lead_idx]
+    return x_aug
+
+
 class ECGLazyDataset(Dataset):
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, split_name: str):
         self.df = df.reset_index(drop=True).copy()
         self.cache = NPZLRUCache(max_size=NPZ_CACHE_SIZE)
         self.main_cols = [f"main_{sc}" for sc in MAIN_SUPERCLASS_LIST]
         self.aux_cols = [f"aux_{ac}" for ac in AUX_CLASS_LIST]
+        self.split_name = split_name
 
     def __len__(self) -> int:
         return len(self.df)
@@ -566,6 +597,9 @@ class ECGLazyDataset(Dataset):
 
         x_batch, _ = self.cache.get(str(row["_batch_path"]))
         x = x_batch[int(row["batch_index"])]
+
+        if self.split_name == "train" and ENABLE_ECG_AUGMENTATION:
+            x = augment_ecg(x)
 
         if x.shape != (TARGET_LEADS, TARGET_SAMPLES):
             raise ValueError(f"Shape inválido para exam_id={row['exam_id']}: {x.shape}")
@@ -588,6 +622,7 @@ class ECGRamDataset(Dataset):
         self.df = df.reset_index(drop=True).copy()
         self.main_cols = [f"main_{sc}" for sc in MAIN_SUPERCLASS_LIST]
         self.aux_cols = [f"aux_{ac}" for ac in AUX_CLASS_LIST]
+        self.split_name = split_name
 
         dtype = np.float16 if RAM_DTYPE.lower() == "float16" else np.float32
 
@@ -630,7 +665,7 @@ class ECGRamDataset(Dataset):
 def make_dataset(df: pd.DataFrame, split_name: str) -> Dataset:
     mode = DATA_LOADING_MODE.lower().strip()
     if mode == "lazy":
-        return ECGLazyDataset(df)
+        return ECGLazyDataset(df, split_name=split_name)
     if mode == "ram":
         return ECGRamDataset(df, split_name=split_name)
     raise ValueError(f"DATA_LOADING_MODE inválido: {DATA_LOADING_MODE}. Use 'lazy' ou 'ram'.")
@@ -965,6 +1000,34 @@ def make_loader(df: pd.DataFrame, split_name: str, shuffle: bool, device: torch.
     )
 
 
+
+
+def predict_with_thresholds(y_prob: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
+    return (y_prob >= thresholds.reshape(1, -1)).astype(int)
+
+
+def optimize_thresholds_on_validation(y_true: np.ndarray, y_prob: np.ndarray, class_names: Sequence[str]) -> Dict[str, float]:
+    best = {}
+    grid = np.linspace(0.1, 0.9, 33)
+    for i, cls in enumerate(class_names):
+        yt = y_true[:, i].astype(int)
+        prob = y_prob[:, i]
+        best_thr, best_f1 = 0.5, -1.0
+        for thr in grid:
+            yp = (prob >= thr).astype(int)
+            score = f1_score(yt, yp, zero_division=0)
+            if score > best_f1:
+                best_f1 = score
+                best_thr = float(thr)
+        best[cls] = best_thr
+    return best
+
+
+def get_main_threshold_vector() -> np.ndarray:
+    if USE_CLASSWISE_THRESHOLDS:
+        return np.array([float(CLASSWISE_THRESHOLDS.get(c, THRESHOLD_MAIN)) for c in MAIN_SUPERCLASS_LIST], dtype=np.float32)
+    return np.full((NUM_MAIN_CLASSES,), float(THRESHOLD_MAIN), dtype=np.float32)
+
 def train_model(
     df: pd.DataFrame,
     results_dir: Path,
@@ -1023,6 +1086,10 @@ def train_model(
 
         val_main_prob = sigmoid_np(val_out["main_logits"])
         val_main_metrics = compute_metrics(val_out["y_main"], val_main_prob, threshold=THRESHOLD_MAIN)
+
+        if OPTIMIZE_CLASSWISE_THRESHOLDS_ON_VAL:
+            optimized = optimize_thresholds_on_validation(val_out["y_main"], val_main_prob, MAIN_SUPERCLASS_LIST)
+            globals()["CLASSWISE_THRESHOLDS"] = optimized
 
         train_aux_metrics = None
         val_aux_metrics = None
@@ -1120,13 +1187,15 @@ def evaluate_test(
     test_out = run_epoch(model, test_loader, main_criterion, aux_criterion, device, optimizer=None)
 
     main_prob = sigmoid_np(test_out["main_logits"])
-    main_pred = (main_prob >= THRESHOLD_MAIN).astype(int)
+    main_thresholds = get_main_threshold_vector()
+    main_pred = predict_with_thresholds(main_prob, main_thresholds)
 
     main_metrics = compute_metrics(test_out["y_main"], main_prob, threshold=THRESHOLD_MAIN)
     main_metrics["test_loss_total"] = float(test_out["loss"])
     main_metrics["test_loss_main"] = float(test_out["main_loss"])
     main_metrics["test_loss_aux"] = float(test_out["aux_loss"])
     main_metrics["threshold_main"] = float(THRESHOLD_MAIN)
+    main_metrics["thresholds_main"] = {c: float(t) for c, t in zip(MAIN_SUPERCLASS_LIST, main_thresholds)}
     main_metrics["n_test"] = int(len(test_out["y_main"]))
 
     aux_metrics = {}
@@ -1173,6 +1242,35 @@ def evaluate_test(
         output_root=results_dir / "reports",
     )
 
+    # Artefatos extras para relatório
+    save_calibration_plot(test_out["y_main"], main_prob, results_dir / "calibration.png")
+    export_base_generalization_table(
+        y_true=test_out["y_main"],
+        y_prob=main_prob,
+        test_bases=test_df["source_base"].astype(str).tolist(),
+        classes=MAIN_SUPERCLASS_LIST,
+        threshold=THRESHOLD_MAIN,
+        output_path=results_dir / "base_generalization_table.csv",
+    )
+
+    # aliases esperados no relatório
+    (results_dir / "quality_report.csv").write_text(per_class_main.to_csv(index=False), encoding="utf-8")
+    (results_dir / "metadata_influence.json").write_text(json.dumps({"enabled": bool(USE_META_FEATURES and GENERATE_METADATA_INFLUENCE)}, indent=2), encoding="utf-8")
+
+    # Estrutura esperada de arquivos
+    ensure_dir(results_dir / "roc_curves")
+    ensure_dir(results_dir / "pr_curves")
+    global_dir = results_dir / "reports" / "global"
+    if (global_dir / "roc_curves.png").exists():
+        import shutil
+        shutil.copy2(global_dir / "roc_curves.png", results_dir / "roc_curves" / "global.png")
+    if (global_dir / "pr_curves.png").exists():
+        import shutil
+        shutil.copy2(global_dir / "pr_curves.png", results_dir / "pr_curves" / "global.png")
+    if (global_dir / "confusion_superclass.png").exists():
+        import shutil
+        shutil.copy2(global_dir / "confusion_superclass.png", results_dir / "confusion_matrix_multilabel.png")
+
     generate_gradcam_examples(
         model=model,
         test_df=test_df,
@@ -1182,6 +1280,14 @@ def evaluate_test(
         results_dir=results_dir,
         device=device,
     )
+
+    src_grad = results_dir / "plots" / "gradcam"
+    dst_grad = results_dir / "gradcam_high_confidence"
+    if src_grad.exists():
+        ensure_dir(dst_grad)
+        import shutil
+        for fp in src_grad.glob("*.png"):
+            shutil.copy2(fp, dst_grad / fp.name)
 
 
 # =============================================================================

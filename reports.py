@@ -7,6 +7,7 @@ from typing import Any, Dict, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     average_precision_score,
     multilabel_confusion_matrix,
@@ -194,3 +195,38 @@ def generate_split_reports(
         _plot_pr(yt, yp, class_names, group_dir / "pr_curves.png")
         _plot_roc(yt, yp, class_names, group_dir / "roc_curves.png")
         _table(yt, yp, class_names, threshold).to_csv(group_dir / "per_class_metrics.csv", index=False, encoding="utf-8-sig")
+
+
+def save_calibration_plot(y_true: np.ndarray, y_prob: np.ndarray, output_path: Path) -> None:
+    fig = plt.figure(figsize=(6, 6))
+    for i in range(y_true.shape[1]):
+        yt = y_true[:, i]
+        if len(np.unique(yt)) < 2:
+            continue
+        frac_pos, mean_pred = calibration_curve(yt, y_prob[:, i], n_bins=10, strategy="quantile")
+        plt.plot(mean_pred, frac_pos, marker="o", linewidth=1)
+    plt.plot([0, 1], [0, 1], linestyle=":", color="black")
+    plt.xlabel("Prob prevista")
+    plt.ylabel("Fração positiva")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(output_path, dpi=130)
+    plt.close(fig)
+
+
+def export_base_generalization_table(y_true: np.ndarray, y_prob: np.ndarray, test_bases: Sequence[str], classes: Sequence[str], threshold: float, output_path: Path) -> None:
+    rows = []
+    tb = np.asarray(test_bases)
+    for base in sorted(set(test_bases)):
+        idx = np.where(tb == base)[0]
+        yt, yp = y_true[idx], y_prob[idx]
+        ypred = (yp >= threshold).astype(int)
+        f1_macro = float(f1_score(yt, ypred, average="macro", zero_division=0))
+        try: auroc = float(roc_auc_score(yt, yp, average="macro"))
+        except Exception: auroc = float("nan")
+        try: auprc = float(average_precision_score(yt, yp, average="macro"))
+        except Exception: auprc = float("nan")
+        class_f1 = [f1_score(yt[:,i], ypred[:,i], zero_division=0) for i in range(len(classes))]
+        pior = classes[int(np.argmin(class_f1))]
+        rows.append({"Test base": base, "F1 macro": f1_macro, "AUROC macro": auroc, "AUPRC macro": auprc, "pior classe": pior})
+    pd.DataFrame(rows).to_csv(output_path, index=False, encoding='utf-8-sig')

@@ -81,6 +81,19 @@ RAM_DTYPE = "float32"
 NPZ_CACHE_SIZE = 4
 
 # ==============================
+# Data augmentation (treino)
+# ==============================
+ENABLE_ECG_AUGMENTATION = True
+AUG_NOISE_PROB = 0.5
+AUG_NOISE_STD = 0.01
+AUG_SCALE_PROB = 0.5
+AUG_SCALE_MIN = 0.8
+AUG_SCALE_MAX = 1.2
+AUG_SHIFT_PROB = 0.3
+AUG_SHIFT_MAX = 50
+AUG_LEAD_INVERT_PROB = 0.2
+
+# ==============================
 # Filtros de qualidade
 # ==============================
 # Warnings que removem exame durante preparação.
@@ -120,6 +133,15 @@ FC_HIDDEN_DIM = 256
 # ==============================
 THRESHOLD_MAIN = 0.5
 THRESHOLD_AUX = 0.5
+USE_CLASSWISE_THRESHOLDS = False
+OPTIMIZE_CLASSWISE_THRESHOLDS_ON_VAL = True
+CLASSWISE_THRESHOLDS = {
+    "CD": 0.5,
+    "HYP": 0.5,
+    "MI": 0.5,
+    "NORM": 0.5,
+    "STTC": 0.5,
+}
 SAVE_PREDICTIONS = True
 
 # Flags legadas de avaliação avançada.
